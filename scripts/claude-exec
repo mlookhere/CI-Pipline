@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+COMMON="$(git -C "$ROOT" rev-parse --git-common-dir)"
+if [[ "$COMMON" != /* ]]; then COMMON="$ROOT/$COMMON"; fi
+RUNS="$COMMON/claude/runs"
+mkdir -p "$RUNS"
+chmod 700 "$COMMON/claude" "$RUNS" 2>/dev/null || true
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+DIR="$RUNS/$RUN_ID"
+mkdir -p "$DIR"
+chmod 700 "$DIR"
+RESULT="$DIR/result.json"
+FINAL="$DIR/final.txt"
+USAGE="$DIR/usage.json"
+MAX_TURNS="${CLAUDE_MAX_TURNS:-12}"
+MAX_BUDGET="${CLAUDE_MAX_BUDGET_USD:-5.00}"
+TOOLS="${CLAUDE_AUTOMATION_TOOLS:-Read,Grep,Glob,Bash}"
+DISALLOWED="${CLAUDE_AUTOMATION_DISALLOWED_TOOLS:-Edit,Write,NotebookEdit,WebFetch,WebSearch}"
+
+command -v claude >/dev/null || { echo "claude is required" >&2; exit 127; }
+[[ $# -gt 0 ]] || { echo "usage: ./scripts/claude-exec PROMPT" >&2; exit 2; }
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] || {
+  echo "ANTHROPIC_API_KEY is required because Claude --bare does not read OAuth/keychain credentials." >&2
+  exit 2
+}
+
+set +e
+claude --bare -p "$*" \
+  --settings "$ROOT/.claude/settings.json" \
+  --append-system-prompt-file "$ROOT/CLAUDE.md" \
+  --permission-mode dontAsk \
+  --allowedTools "$TOOLS" \
+  --disallowedTools "$DISALLOWED" \
+  --output-format json \
+  --no-session-persistence \
+  --max-turns "$MAX_TURNS" \
+  --max-budget-usd "$MAX_BUDGET" >"$RESULT"
+status=$?
+set -e
+
+python3 - "$RESULT" "$FINAL" <<'PY2'
+import json
+import pathlib
+import sys
+
+src, out = map(pathlib.Path, sys.argv[1:])
+try:
+    data = json.loads(src.read_text(encoding="utf-8", errors="replace"))
+    text = str(data.get("result") or data.get("structured_output") or "")
+except Exception as exc:
+    text = f"Unable to parse Claude output: {exc}"
+out.write_text(text + "\n", encoding="utf-8")
+PY2
+
+python3 "$ROOT/workflow/claude_usage_report.py" "$RESULT" --output "$USAGE" >/dev/null || true
+chmod 600 "$RESULT" "$FINAL" "$USAGE" 2>/dev/null || true
+cat "$FINAL"
+printf '
+Claude run: %s
+Usage: %s
+' "$RESULT" "$USAGE" >&2
+exit "$status"

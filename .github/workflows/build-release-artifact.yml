@@ -1,0 +1,49 @@
+name: Build and attest release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-artifact-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: vars.ENABLE_RELEASE_ARTIFACT == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ci/requirements-ci.txt
+      - run: ./scripts/bootstrap --ci
+      - name: Build exact release artifacts and SBOM
+        run: ./ci/run release-artifact
+      - name: Create deterministic release manifest
+        run: python3 workflow/release_manifest.py create --root artifacts/release --commit "$GITHUB_SHA"
+      - name: Attest release artifact provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: artifacts/release/**
+      - name: Upload immutable release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ github.sha }}
+          path: artifacts/release/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

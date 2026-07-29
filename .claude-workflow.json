@@ -1,0 +1,269 @@
+{
+  "version": 2,
+  "branches": {
+    "integration": "dev",
+    "production": "master"
+  },
+  "worktrees": {
+    "root": "../.worktrees",
+    "branch_prefix": "work"
+  },
+  "github": {
+    "control_issue_title": "[CONTROL] Current repository state",
+    "release_title_prefix": "[RELEASE]",
+    "state_labels": [
+      "state:ready",
+      "state:active",
+      "state:blocked",
+      "state:review",
+      "state:release-ready"
+    ],
+    "risk_paths": {
+      "risk:ci": [
+        ".github/workflows/**",
+        ".github/actions/**",
+        "ci/**",
+        "workflow/**",
+        ".claude/**",
+        ".claude-workflow.json"
+      ],
+      "risk:database": [
+        "**/migrations/**",
+        "**/schema/**",
+        "**/schema.*"
+      ],
+      "risk:security": [
+        "**/auth/**",
+        "**/security/**",
+        "**/*permission*",
+        "**/*authorization*",
+        "knowledge_nexus/config.py",
+        ".env.example"
+      ],
+      "risk:deployment": [
+        "ops/**",
+        "infra/**",
+        "Dockerfile",
+        "k8s/**",
+        "helm/**"
+      ],
+      "risk:dependencies": [
+        "pyproject.toml",
+        "requirements.txt",
+        "ci/requirements-ci.txt",
+        "uv.lock",
+        "poetry.lock"
+      ]
+    },
+    "branch_protection": {
+      "integration": {
+        "required_checks": [
+          "PR metadata",
+          "Fast deterministic gates",
+          "PR test/build gates",
+          "Workflow policy"
+        ],
+        "required_approving_reviews": 0
+      },
+      "production": {
+        "required_checks": [
+          "Release metadata",
+          "Full regression and production build",
+          "Workflow policy"
+        ],
+        "required_approving_reviews": 0
+      }
+    },
+    "expected_owner": "mlookhere",
+    "expected_repository": "Knowledge-Nexus"
+  },
+  "commands": {
+    "bootstrap_local": [
+      "\"$CI_PYTHON\" -m venv .venv",
+      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check --upgrade pip",
+      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -r requirements.txt",
+      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -e \".[dev]\""
+    ],
+    "bootstrap_ci": [
+      "\"$CI_PYTHON\" -m venv .venv",
+      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check --upgrade pip",
+      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -r requirements.txt",
+      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -e \".[dev]\""
+    ],
+    "format_check": [
+      "ruff format --check ."
+    ],
+    "lint": [
+      "ruff check ."
+    ],
+    "typecheck": [
+      "mypy"
+    ],
+    "unit": [
+      "\"$PROJECT_PYTHON\" -m pytest -q"
+    ],
+    "integration": [],
+    "build": [
+      "\"$CI_PYTHON\" -m build --wheel --outdir artifacts/dist"
+    ],
+    "security": [
+      "pip-audit -r requirements.txt --strict || pip-audit -r requirements.txt"
+    ],
+    "migration": [],
+    "e2e": [],
+    "image_build": [
+      "docker build --pull -t \"local/${GITHUB_REPOSITORY:-project}:${GITHUB_SHA:-dev}\" ."
+    ],
+    "deploy_development": [
+      "./ops/deploy-development \"${GITHUB_SHA:-local}\""
+    ],
+    "healthcheck_development": [
+      "./ops/healthcheck development"
+    ],
+    "deploy_production": [
+      "./ops/deploy-production \"${GITHUB_SHA:-local}\""
+    ],
+    "healthcheck_production": [
+      "./ops/healthcheck production"
+    ],
+    "rollback_production": [
+      "./ops/rollback-production \"${ROLLBACK_REF:?ROLLBACK_REF is required}\""
+    ],
+    "mutation": [],
+    "property": [],
+    "flake": [],
+    "contract": [],
+    "generated_check": [],
+    "coverage": [
+      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=knowledge_nexus --cov-report=term --cov-fail-under=70"
+    ],
+    "clean_install": [],
+    "vulnerability": [],
+    "license": [],
+    "sbom": [],
+    "accessibility": [],
+    "performance_smoke": [],
+    "dead_code": [],
+    "package_release": [],
+    "workflow_self_test": [
+      "\"$CI_PYTHON\" workflow/self_test.py --ci"
+    ]
+  },
+  "stages": {
+    "fast": [
+      "workflow_self_test",
+      "quality",
+      "format_check",
+      "lint",
+      "typecheck"
+    ],
+    "pr": [
+      "unit",
+      "integration",
+      "coverage",
+      "generated_check",
+      "build"
+    ],
+    "release": [
+      "security",
+      "vulnerability",
+      "license",
+      "unit",
+      "integration",
+      "coverage",
+      "generated_check",
+      "clean_install",
+      "build",
+      "package_release",
+      "sbom"
+    ],
+    "migrations": [
+      "migration"
+    ],
+    "e2e": [
+      "e2e",
+      "accessibility"
+    ],
+    "deploy-development": [
+      "deploy_development",
+      "healthcheck_development"
+    ],
+    "deploy-production": [
+      "deploy_production",
+      "healthcheck_production"
+    ],
+    "rollback-production": [
+      "rollback_production",
+      "healthcheck_production"
+    ],
+    "bootstrap-local": [
+      "bootstrap_local"
+    ],
+    "bootstrap-ci": [
+      "bootstrap_ci"
+    ],
+    "nightly": [
+      "security",
+      "unit",
+      "coverage",
+      "build",
+      "mutation",
+      "property",
+      "flake",
+      "dead_code",
+      "performance_smoke"
+    ],
+    "release-artifact": [
+      "package_release",
+      "sbom"
+    ]
+  },
+  "quality": {
+    "base_ref": "origin/dev",
+    "max_changed_file_lines": 1500,
+    "max_function_lines": 120,
+    "max_cyclomatic_complexity": 15,
+    "require_issue_for_todo": true,
+    "banned_phrases": [
+      "in today's fast-paced",
+      "it is important to note",
+      "delve into",
+      "seamlessly integrates",
+      "robust and scalable solution"
+    ],
+    "text_extensions": [
+      ".md",
+      ".mdx",
+      ".txt",
+      ".py"
+    ],
+    "source_extensions": [
+      ".py",
+      ".js",
+      ".ts"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/.ci-venv/**",
+      "data/**",
+      "artifacts/**",
+      "**/*.min.js",
+      "**/*.map",
+      "**/fixtures/**",
+      "uv.lock",
+      "poetry.lock"
+    ],
+    "max_identical_command_failures": 3,
+    "max_pr_files": 80,
+    "max_pr_changed_lines": 4000
+  },
+  "tracking": {
+    "require_issue_for_mutation_prompts": true,
+    "lease_ttl_seconds": 28800,
+    "optimistic_issue_updates": true,
+    "control_issue_max_active_rows": 20
+  }
+}

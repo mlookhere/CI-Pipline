@@ -1,0 +1,23 @@
+name: Release
+description: Release control Issue promoting dev to master
+labels: ["type:release", "state:ready"]
+body:
+  - type: textarea
+    id: included
+    attributes:
+      label: Included task Issues
+      description: List every task Issue in this release batch.
+      placeholder: |
+        - #12
+        - #14
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Release verification
+      value: |
+        - [ ] Release gate green on the release PR
+        - [ ] Candidate commit recorded
+        - [ ] Post-deploy health verified
+        - [ ] Rollback reference recorded

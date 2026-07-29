@@ -1,0 +1,34 @@
+name: Task
+description: One independently deliverable change
+labels: ["type:feature", "state:ready"]
+body:
+  - type: textarea
+    id: requirement
+    attributes:
+      label: Requirement
+      description: What must exist when this is done, stated as observable behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checkable criteria; each should map to a test or gate.
+      placeholder: |
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Out of scope
+      description: What this Issue deliberately does not change.
+  - type: textarea
+    id: state
+    attributes:
+      label: Managed handoff state
+      description: Maintained by the working session; replaced, never appended.
+      value: |
+        <!-- state:start -->
+        _No session state yet._
+        <!-- state:end -->

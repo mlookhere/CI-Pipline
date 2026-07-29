@@ -1,0 +1,25 @@
+name: Deploy development
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: development-deployment
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: vars.ENABLE_DEVELOPMENT_DEPLOY == 'true'
+    environment: development
+    runs-on: [self-hosted, dev-deployer]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: ./ci/run deploy-development

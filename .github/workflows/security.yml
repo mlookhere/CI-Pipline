@@ -1,0 +1,69 @@
+name: Security and supply chain
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [master, dev]
+  schedule:
+    - cron: '17 4 * * 3'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  workflow-policy:
+    name: Workflow policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the Claude workflow control plane
+        run: python3 workflow/self_test.py --ci
+      - name: Reject dangerous workflow patterns
+        run: |
+          python3 workflow/check_workflow_policy.py
+          if [[ "${{ vars.ENFORCE_PINNED_ACTIONS }}" == "true" ]]; then
+            python3 workflow/pin_actions.py --check
+          else
+            echo "Pinned Action enforcement activates after ./scripts/setup-github."
+          fi
+
+  codeql-actions:
+    name: CodeQL for Actions
+    if: github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      packages: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: actions
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v4

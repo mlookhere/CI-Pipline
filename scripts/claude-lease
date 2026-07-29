@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse, json, subprocess, time
+from pathlib import Path
+
+def root(): return Path(subprocess.check_output(["git","rev-parse","--show-toplevel"],text=True).strip())
+def common(r):
+    p=Path(subprocess.check_output(["git","rev-parse","--git-common-dir"],cwd=r,text=True).strip())
+    return (r/p).resolve() if not p.is_absolute() else p
+
+def main():
+    p=argparse.ArgumentParser(); p.add_argument("action",choices=["show","release"]); p.add_argument("issue",type=int); a=p.parse_args()
+    path=common(root())/"claude"/"leases"/f"{a.issue}.json"
+    if a.action=="show":
+        print(path.read_text() if path.exists() else f"No lease for Issue #{a.issue}")
+    else:
+        if path.exists(): path.unlink(); print(f"Released local lease for Issue #{a.issue}")
+        else: print(f"No lease for Issue #{a.issue}")
+    return 0
+if __name__=="__main__": raise SystemExit(main())

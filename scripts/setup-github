@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# One-time GitHub repository metadata setup, adapted from the Codex starter
+# for the Anthropic/Claude workflow. Requires: gh CLI authenticated to the repo.
+# Run only after the bootstrap commit is merged into the production branch.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+command -v gh >/dev/null || { echo "GitHub CLI is required" >&2; exit 2; }
+gh auth status >/dev/null
+
+create_label() {
+  local name="$1" color="$2" description="$3"
+  gh label create "$name" --color "$color" --description "$description" 2>/dev/null || \
+    gh label edit "$name" --color "$color" --description "$description" >/dev/null
+}
+
+create_label "type:bug" "d73a4a" "Defect or regression"
+create_label "type:feature" "0e8a16" "New behavior"
+create_label "type:maintenance" "6f42c1" "Maintenance or refactoring"
+create_label "type:release" "5319e7" "Release control issue"
+create_label "state:ready" "bfdadc" "Ready to start"
+create_label "state:active" "fbca04" "Implementation active"
+create_label "state:blocked" "b60205" "Blocked"
+create_label "state:review" "1d76db" "Pull request review"
+create_label "state:release-ready" "0e8a16" "Merged and waiting for release"
+create_label "risk:database" "b60205" "Database or migration risk"
+create_label "risk:security" "b60205" "Security or authorization risk"
+create_label "risk:billing" "b60205" "Billing or money movement risk"
+create_label "risk:deployment" "d93f0b" "Deployment or infrastructure risk"
+create_label "risk:dependencies" "d93f0b" "Dependency manifest or lockfile risk"
+create_label "risk:ci" "d93f0b" "CI or workflow policy change"
+create_label "risk:large-change" "d93f0b" "Change exceeds normal review-size budget"
+create_label "claude:review" "7057ff" "Run optional read-only Claude review"
+
+CONTROL_TITLE="$(python3 -c 'import json; print(json.load(open(".claude-workflow.json"))["github"]["control_issue_title"])')"
+CONTROL_NUMBER="$(
+  gh issue list --state open --limit 100 --json number,title 2>/dev/null |
+  python3 -c 'import json, sys; title=sys.argv[1]; print(next((str(i["number"]) for i in json.load(sys.stdin) if i.get("title") == title), ""))' "$CONTROL_TITLE" || true
+)"
+if [[ -z "$CONTROL_NUMBER" ]]; then
+  CONTROL_NUMBER="$(gh issue create --title "$CONTROL_TITLE" --label type:maintenance --body-file - <<'CONTROL_BODY' | sed -n 's#.*/issues/##p'
+<!-- claude-control:start -->
+## Branch state
+
+- Production: not configured
+- Integration: not configured
+- Current release Issue: none
+
+## Active work
+
+| Issue | Branch | State | Risk | PR / CI |
+|---|---|---|---|---|
+| — | — | no active task Issues | — | — |
+
+_Not synchronized yet._
+<!-- claude-control:end -->
+
+## Current hazards
+
+None recorded.
+CONTROL_BODY
+)"
+fi
+
+if [[ -n "$CONTROL_NUMBER" ]]; then
+  ISSUE_ID="$(gh issue view "$CONTROL_NUMBER" --json id --jq .id 2>/dev/null || true)"
+  if [[ -n "$ISSUE_ID" ]]; then
+    gh api graphql \
+      -f query='mutation($issue:ID!){pinIssue(input:{issueId:$issue}){issue{number}}}' \
+      -F issue="$ISSUE_ID" >/dev/null 2>&1 || \
+      echo "NOTE: Pin Issue #$CONTROL_NUMBER manually if it is not already pinned."
+  fi
+fi
+
+python3 workflow/pin_actions.py
+gh variable set ENFORCE_PINNED_ACTIONS --body true >/dev/null || \
+  echo "NOTE: set repository variable ENFORCE_PINNED_ACTIONS=true manually (needs admin)."
+
+INTEGRATION="$(python3 -c 'import json; print(json.load(open(".claude-workflow.json"))["branches"]["integration"])')"
+PRODUCTION="$(python3 -c 'import json; print(json.load(open(".claude-workflow.json"))["branches"]["production"])')"
+
+protect_branch() {
+  local branch="$1" checks_json="$2" reviews="$3"
+  gh api -X PUT "repos/{owner}/{repo}/branches/$branch/protection" \
+    --input - <<PROTECTION || echo "WARNING: could not protect $branch (needs admin); configure manually."
+{
+  "required_status_checks": {"strict": true, "contexts": $checks_json},
+  "enforce_admins": true,
+  "required_pull_request_reviews": {"required_approving_review_count": $reviews},
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": true
+}
+PROTECTION
+}
+
+if [[ "${SKIP_BRANCH_PROTECTION:-0}" == "1" ]]; then
+  echo "WARNING: branch protection skipped by request."
+else
+  INT_CHECKS="$(python3 -c 'import json; c=json.load(open(".claude-workflow.json")); print(json.dumps(c["github"]["branch_protection"]["integration"]["required_checks"]))')"
+  PROD_CHECKS="$(python3 -c 'import json; c=json.load(open(".claude-workflow.json")); print(json.dumps(c["github"]["branch_protection"]["production"]["required_checks"]))')"
+  INT_REVIEWS="$(python3 -c 'import json; c=json.load(open(".claude-workflow.json")); print(c["github"]["branch_protection"]["integration"]["required_approving_reviews"])')"
+  PROD_REVIEWS="$(python3 -c 'import json; c=json.load(open(".claude-workflow.json")); print(c["github"]["branch_protection"]["production"]["required_approving_reviews"])')"
+  protect_branch "$INTEGRATION" "$INT_CHECKS" "$INT_REVIEWS"
+  protect_branch "$PRODUCTION" "$PROD_CHECKS" "$PROD_REVIEWS"
+fi
+
+cat <<'NEXT'
+
+GitHub repository metadata is installed:
+labels, the pinned control Issue, pinned-Action enforcement, and protected
+integration/production branches with required CI checks.
+
+Complete these repository-specific steps once:
+
+1. Add the ANTHROPIC_API_KEY repository secret if you want the optional
+   `claude:review` advisory PR review workflow.
+2. Increase required_approving_reviews in .claude-workflow.json and rerun
+   this script when human PR approval should be mandatory.
+3. Pin external Actions to full SHAs (workflow/pin_actions.py lists them)
+   and commit the result.
+4. Settings > Environments: create `production` with required reviewers
+   before enabling any deployment workflow.
+NEXT

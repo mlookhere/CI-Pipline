@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+CI_MODE=false
+if [[ "${1:-}" == "--ci" ]]; then
+  CI_MODE=true
+fi
+
+SYSTEM_PYTHON="${PYTHON_BIN:-python3}"
+"$SYSTEM_PYTHON" - <<'PY_VERSION_CHECK'
+import sys
+if sys.version_info < (3, 10):
+    raise SystemExit("Python 3.10 or newer is required for the workflow tooling")
+PY_VERSION_CHECK
+
+CI_HOME="${CLAUDE_CI_HOME:-$HOME/.local/share/claude-code-ci/v2}"
+CI_VENV="$CI_HOME/venv"
+mkdir -p "$CI_HOME"
+
+# Virtualenv layout differs between POSIX (bin/) and Windows (Scripts/).
+venv_python() {
+  if [[ -x "$1/bin/python" ]]; then
+    printf '%s\n' "$1/bin/python"
+  elif [[ -x "$1/Scripts/python.exe" ]]; then
+    printf '%s\n' "$1/Scripts/python.exe"
+  fi
+}
+
+# A venv whose interpreter exists but whose pip is missing is worse than no
+# venv at all: gate tools resolve to broken shims and every quality check
+# reports a content failure instead of a broken install. Verify, repair, and
+# only then rebuild from scratch.
+CI_PYTHON="$(venv_python "$CI_VENV")"
+if [[ -n "$CI_PYTHON" ]] && ! "$CI_PYTHON" -m pip --version >/dev/null 2>&1; then
+  echo "CI runtime is missing pip; attempting in-place repair via ensurepip."
+  "$CI_PYTHON" -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+if [[ -n "$CI_PYTHON" ]] && ! "$CI_PYTHON" -m pip --version >/dev/null 2>&1; then
+  echo "CI runtime is unusable; rebuilding $CI_VENV from scratch."
+  rm -rf "$CI_VENV"
+  CI_PYTHON=""
+fi
+if [[ -z "$CI_PYTHON" ]]; then
+  "$SYSTEM_PYTHON" -m venv "$CI_VENV"
+  CI_PYTHON="$(venv_python "$CI_VENV")"
+fi
+if [[ -z "$CI_PYTHON" ]]; then
+  echo "Failed to provision a CI runtime at $CI_VENV" >&2
+  exit 1
+fi
+
+"$CI_PYTHON" -m pip install --disable-pip-version-check --upgrade pip
+"$CI_PYTHON" -m pip install --disable-pip-version-check -r "$ROOT/ci/requirements-ci.txt"
+
+# Fail loudly if a declared gate tool did not actually land, rather than
+# letting ci/run discover it as an opaque "command not found" mid-gate.
+for tool in ruff mypy pytest lizard detect-secrets-hook pip-audit; do
+  if [[ ! -x "$CI_VENV/bin/$tool" && ! -x "$CI_VENV/Scripts/$tool.exe" ]]; then
+    echo "Gate tool '$tool' is missing from $CI_VENV after install" >&2
+    exit 1
+  fi
+done
+
+if [[ "$CI_MODE" == false ]]; then
+  "$CI_PYTHON" -m pre_commit install --hook-type pre-commit --hook-type pre-push
+  "$ROOT/ci/run" bootstrap-local
+else
+  "$ROOT/ci/run" bootstrap-ci
+fi
+
+printf '\nGlobal CI runtime: %s\n' "$CI_VENV"
+printf 'Project environment: %s\n' "$ROOT/.venv"
+printf 'Bootstrap complete. Run: ./flow doctor\n'

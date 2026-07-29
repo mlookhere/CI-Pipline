@@ -1,0 +1,12 @@
+# Repository command policy: one regex per line, TAB, then the denial reason.
+# These block common workflow bypasses and destructive operations.
+
+git\s+commit[^\n]*--no-verify	commits must pass the pre-commit gates
+git\s+push[^\n]*--no-verify	pushes must pass the pre-push gates
+git\s+push[^\n]*(--force|-f)\b	force pushes are prohibited; open a new commit instead
+git\s+push[^\n]+\b(origin\s+)?(dev|master)\b	direct pushes to protected branches are prohibited; open a PR
+gh\s+pr\s+merge[^\n]*--admin	administrator merges bypass required checks
+git\s+reset\s+--hard	hard resets destroy work; prefer git stash or a new branch
+git\s+clean[^\n]*-[a-z]*f[a-z]*d	destructive clean removes untracked work
+rm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)[a-z]*\s+(/|~|\$HOME)(\s|$)	recursive deletion of root/home is prohibited
+docker\s+system\s+prune	docker system prune is destructive on shared hosts

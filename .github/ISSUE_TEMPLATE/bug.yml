@@ -1,0 +1,32 @@
+name: Bug
+description: Defect or regression
+labels: ["type:bug", "state:ready"]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: What happens, with the exact command/request and output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps; include document/provider configuration if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: Managed handoff state
+      value: |
+        <!-- state:start -->
+        _No session state yet._
+        <!-- state:end -->
