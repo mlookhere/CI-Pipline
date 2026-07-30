@@ -26,6 +26,8 @@ REQUIRED_HOOK_EVENTS = {
     "Stop",
 }
 REQUIRED_PR_SECTIONS = {"Issue", "Result", "Implementation", "Verification", "Risk", "Remaining work"}
+# `python3` as a command, not as part of resolve_python, PYTHON3_BIN, or a path fragment.
+BARE_PYTHON3 = re.compile(r"(?<![-\w])python3\b")
 EXECUTABLES = (
     "flow",
     "ci/run",
@@ -250,7 +252,7 @@ def check_entry_point_interpreters() -> list[str]:
         for number, line in enumerate(lines, start=1):
             if line.lstrip().startswith("#"):
                 continue
-            if re.search(r"(?<![-\w])python3\b", line):
+            if BARE_PYTHON3.search(line):
                 failures.append(
                     f"{relative}:{number}: invokes a bare python3; source scripts/lib/python.sh "
                     "and use resolve_python (or resolve_system_python) instead"
