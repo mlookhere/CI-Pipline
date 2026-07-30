@@ -33,7 +33,9 @@ def _keywords(source: str) -> set[str]:
         pytest.param('subprocess.run(["gh"], text=True, capture_output=True)', id="run-capture"),
         pytest.param('subprocess.check_output(["gh"], text=True)', id="check_output"),
         pytest.param('subprocess.Popen(["gh"], stdout=PIPE, text=True)', id="popen-pipe"),
-        pytest.param('subprocess.run(["gh"], universal_newlines=True, capture_output=True)', id="legacy-text"),
+        pytest.param(
+            'subprocess.run(["gh"], universal_newlines=True, capture_output=True)', id="legacy-text"
+        ),
     ],
 )
 def test_a_decoding_capture_is_recognised(source):

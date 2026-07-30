@@ -773,16 +773,32 @@ _Last synchronized by `./flow sync-control`._
 {CONTROL_END}"""
 
 
-def write_control_body(number: Any, updated: str) -> None:
+def write_issue_body(number: Any, body: str, *, prefix: str) -> None:
+    """Replace an Issue body, via a UTF-8 file so the text is never passed through argv.
+
+    Refuses to write a body carrying U+FFFD. Reads decode with errors="replace" so that an
+    undecodable byte cannot kill the command, but that turns a lossy read into a silent
+    write, and an Issue body is handoff truth. A replacement character means information
+    was already lost upstream, so this stops rather than persisting the loss.
+    """
+    if "�" in body:
+        fail(
+            f"refusing to write Issue #{number}: the body contains U+FFFD, so some of it could "
+            "not be decoded. Inspect the Issue before rerunning."
+        )
     with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", prefix="claude-control-", suffix=".md", delete=False
+        "w", encoding="utf-8", prefix=prefix, suffix=".md", delete=False
     ) as handle:
-        handle.write(updated)
+        handle.write(body)
         temporary = Path(handle.name)
     try:
         shell(["gh", "issue", "edit", str(number), "--body-file", str(temporary)])
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def write_control_body(number: Any, updated: str) -> None:
+    write_issue_body(number, updated, prefix="claude-control-")
 
 
 def sync_control(config: dict[str, Any] | None = None) -> None:
@@ -857,15 +873,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
             "Re-read it, reconcile the other session's update, and rerun ./flow handoff."
         )
 
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", prefix=f"claude-issue-{args.issue}-", suffix=".md", delete=False
-    ) as handle:
-        handle.write(updated)
-        temporary = Path(handle.name)
-    try:
-        shell(["gh", "issue", "edit", str(args.issue), "--body-file", str(temporary)])
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_issue_body(args.issue, updated, prefix=f"claude-issue-{args.issue}-")
 
     verified = issue_snapshot(args.issue)
     if managed_block(state_with_checkpoint) not in (verified.get("body") or ""):

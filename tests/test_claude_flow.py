@@ -109,6 +109,26 @@ def test_control_block_replacement_also_keeps_backslashes():
     assert "C:\\Users\\ci" in claude_flow.replace_control_block(body, replacement)
 
 
+def test_a_body_that_could_not_be_fully_decoded_is_never_written_back(monkeypatch):
+    """errors="replace" stops an undecodable byte from killing the read, which would
+    otherwise turn a lossy read into a silent write over handoff truth."""
+    written: list[list[str]] = []
+    monkeypatch.setattr(claude_flow, "shell", lambda command, **_: written.append(command))
+    with pytest.raises(SystemExit):
+        claude_flow.write_issue_body(35, "state with � in it", prefix="test-")
+    assert written == [], "the edit must not be attempted at all"
+
+
+def test_a_clean_body_is_written_through_a_file_not_an_argument(monkeypatch):
+    """Passing a body as argv risks length limits and shell quoting; --body-file does not."""
+    written: list[list[str]] = []
+    monkeypatch.setattr(claude_flow, "shell", lambda command, **_: written.append(command))
+    claude_flow.write_issue_body(35, f"clean {EM_DASH} body", prefix="test-")
+    assert len(written) == 1
+    assert written[0][:5] == ["gh", "issue", "edit", "35", "--body-file"]
+    assert Path(written[0][5]).name.startswith("test-")
+
+
 def test_replacing_a_missing_block_appends_it_without_mangling_text():
     state = f"New {EM_DASH} state with C:\\path"
     updated = claude_flow.replace_managed_block("Body with no markers.\n", claude_flow.managed_block(state))
