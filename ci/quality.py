@@ -33,36 +33,87 @@ DEBUG_PATTERNS = {
 }
 
 
-def run_git(*args: str) -> list[str]:
+class ScopeError(RuntimeError):
+    """The set of files to inspect could not be determined."""
+
+
+def git_lines(*args: str) -> list[str]:
+    """Return git output lines, raising when git itself fails.
+
+    This previously returned [] on any git error, which made "nothing changed"
+    and "git could not answer" indistinguishable: an unresolvable base ref
+    produced an empty scope and the gate reported success having read nothing.
+    """
     result = subprocess.run(["git", *args], cwd=ROOT, text=True, capture_output=True)
     if result.returncode != 0:
-        return []
+        detail = result.stderr.strip().splitlines()
+        raise ScopeError(
+            f"`git {' '.join(args)}` failed with exit {result.returncode}: "
+            + (detail[-1] if detail else "no error output")
+        )
     return [line for line in result.stdout.splitlines() if line]
+
+
+def ref_exists(ref: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
 
 
 def excluded(path: str) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in QUALITY.get("exclude_globs", []))
 
 
-def files_for_mode(mode: str) -> list[str]:
+def resolve_base() -> str | None:
+    """The ref to diff against, or None when HEAD has no parent.
+
+    Substitutions are announced rather than applied silently. A configured base
+    that does not resolve -- a shallow CI checkout, say -- otherwise narrows the
+    scope to the last commit instead of the whole branch, and nothing says so.
+    """
+    base = os.environ.get("CI_BASE_REF") or QUALITY.get("base_ref") or "origin/dev"
+    if ref_exists(base):
+        return base
+    if ref_exists("HEAD~1"):
+        print(
+            f"warning: base ref {base!r} does not resolve; falling back to HEAD~1, "
+            "so this run inspects only the last commit",
+            file=sys.stderr,
+        )
+        return "HEAD~1"
+    print(
+        f"warning: base ref {base!r} does not resolve and HEAD has no parent; "
+        "treating every tracked file as in scope",
+        file=sys.stderr,
+    )
+    return None
+
+
+def files_for_mode(mode: str) -> tuple[list[str], str]:
+    """Return the files to inspect and a description of what they were compared against."""
     if mode == "staged":
-        files = run_git("diff", "--cached", "--name-only", "--diff-filter=ACMR")
+        files = git_lines("diff", "--cached", "--name-only", "--diff-filter=ACMR")
+        against = "the index"
     else:
-        base = os.environ.get("CI_BASE_REF") or QUALITY.get("base_ref") or "origin/dev"
-        if (
-            subprocess.run(
-                ["git", "rev-parse", "--verify", base],
-                cwd=ROOT,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            ).returncode
-            == 0
-        ):
-            files = run_git("diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD")
+        base = resolve_base()
+        if base is None:
+            files = git_lines("ls-files")
+            against = "all tracked files (HEAD has no parent)"
         else:
-            files = run_git("diff", "--name-only", "--diff-filter=ACMR", "HEAD~1...HEAD")
-        files.extend(run_git("diff", "--name-only", "--diff-filter=ACMR"))
-    return sorted({path for path in files if not excluded(path) and (ROOT / path).is_file()})
+            files = git_lines("diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD")
+            against = base
+        # Staged edits appear in neither the committed diff nor the unstaged diff,
+        # so both are needed: otherwise `./ci/run fast` run after `git add` but
+        # before `git commit` inspects nothing at all.
+        files.extend(git_lines("diff", "--cached", "--name-only", "--diff-filter=ACMR"))
+        files.extend(git_lines("diff", "--name-only", "--diff-filter=ACMR"))
+    return sorted({path for path in files if not excluded(path) and (ROOT / path).is_file()}), against
 
 
 def readable_text(path: Path) -> str | None:
@@ -175,29 +226,36 @@ def run_tool(command: list[str], name: str, finding: str) -> str:
     return f"{name} {finding}"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["staged", "changed"], default="changed")
-    args = parser.parse_args()
-    files = files_for_mode(args.mode)
-    print(f"Quality scope ({args.mode}): {len(files)} file(s)")
-    if not files:
-        return 0
+def resolve_scope(mode: str) -> tuple[list[str], str] | None:
+    """Print the scope line. None means the scope could not be determined."""
+    try:
+        files, against = files_for_mode(mode)
+    except ScopeError as exc:
+        print(f"Quality scope ({mode}): UNDETERMINED", file=sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
+        print("refusing to report success for a scope that could not be read", file=sys.stderr)
+        return None
+    print(f"Quality scope ({mode}): {len(files)} file(s) vs {against}")
+    return files, against
 
+
+def scan_all(files: list[str], limits: Limits) -> tuple[list[str], list[str]]:
+    """Scan every readable file, returning its findings and the source files among them."""
     failures: list[str] = []
     source_files: list[str] = []
-    limits = Limits()
-    source_extensions = limits.source_extensions
-
     for relative in files:
         path = ROOT / relative
-        if path.suffix.lower() in source_extensions:
+        if path.suffix.lower() in limits.source_extensions:
             source_files.append(relative)
         text = readable_text(path)
-        if text is None:
-            continue
-        failures.extend(scan_file(relative, path, text, limits))
+        if text is not None:
+            failures.extend(scan_file(relative, path, text, limits))
+    return failures, source_files
 
+
+def external_tool_findings(files: list[str], source_files: list[str]) -> list[str]:
+    """Run lizard and detect-secrets. A missing tool is a failure, never a silent skip."""
+    findings: list[str] = []
     lizard = shutil.which("lizard")
     if source_files and lizard:
         command = [
@@ -210,18 +268,36 @@ def main() -> int:
             *source_files,
         ]
         print("$ " + " ".join(command))
-        failures.append(run_tool(command, "lizard", "complexity/function-length thresholds failed"))
+        findings.append(run_tool(command, "lizard", "complexity/function-length thresholds failed"))
     elif source_files:
-        failures.append("lizard is unavailable; run ./scripts/bootstrap before quality checks")
+        findings.append("lizard is unavailable; run ./scripts/bootstrap before quality checks")
 
     detect_secrets = shutil.which("detect-secrets-hook")
     if files and detect_secrets:
-        command = [detect_secrets, *files]
         print("$ detect-secrets-hook <changed files>")
-        failures.append(run_tool(command, "detect-secrets", "reported one or more possible secrets"))
+        findings.append(
+            run_tool([detect_secrets, *files], "detect-secrets", "reported one or more possible secrets")
+        )
     elif files:
-        failures.append("detect-secrets-hook is unavailable; run ./scripts/bootstrap before quality checks")
+        findings.append("detect-secrets-hook is unavailable; run ./scripts/bootstrap before quality checks")
+    return findings
 
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["staged", "changed"], default="changed")
+    args = parser.parse_args()
+    scope = resolve_scope(args.mode)
+    if scope is None:
+        return 1
+    files, _ = scope
+    if not files:
+        print("Quality checks passed (nothing in scope).")
+        return 0
+
+    limits = Limits()
+    failures, source_files = scan_all(files, limits)
+    failures.extend(external_tool_findings(files, source_files))
     failures = [failure for failure in failures if failure]
 
     if failures:
