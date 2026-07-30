@@ -1,7 +1,13 @@
 version: 2
 updates:
+# target-branch is mandatory on every ecosystem. Without it Dependabot opens
+# PRs against the repository default branch (master), which skips the PR gate
+# entirely -- ci-pr.yml only triggers on `pull_request: branches: [dev]` -- and
+# would land dependency changes on the production branch without ever passing
+# through integration. See workflow/check_workflow_policy.py, which enforces it.
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -11,6 +17,7 @@ updates:
       - "risk:ci"
   - package-ecosystem: "pip"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -19,6 +26,7 @@ updates:
       - "risk:dependencies"
   - package-ecosystem: "docker"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

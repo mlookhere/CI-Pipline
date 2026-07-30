@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
+CONFIG = ROOT / ".claude-workflow.json"
+DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 
 RULES = [
     (re.compile(r"(?im)^\s*permissions\s*:\s*write-all\s*$"), "workflow grants write-all permissions"),
@@ -74,12 +77,58 @@ def check(path: Path) -> list[str]:
     return failures
 
 
+def integration_branch() -> str:
+    try:
+        return str(json.loads(CONFIG.read_text(encoding="utf-8"))["branches"]["integration"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return "dev"
+
+
+def check_dependabot_text(text: str, branch: str, rel: str = "dependabot.yml") -> list[str]:
+    """Every Dependabot ecosystem must target the integration branch.
+
+    With no target-branch, Dependabot opens pull requests against the repository
+    default branch -- the production branch here. ci-pr.yml only triggers on
+    pull requests into the integration branch, so those PRs skip the PR gate
+    entirely and would carry dependency changes onto production without ever
+    passing through integration.
+    """
+    starts = [match.start() for match in re.finditer(r"(?m)^\s*-\s*package-ecosystem\s*:", text)]
+    failures: list[str] = []
+    for index, start in enumerate(starts):
+        block = text[start : starts[index + 1] if index + 1 < len(starts) else len(text)]
+        named = re.search(r"package-ecosystem\s*:\s*[\"']?([^\"'\s#]+)", block)
+        name = named.group(1) if named else "unknown"
+        target = re.search(r"(?m)^\s*target-branch\s*:\s*[\"']?([^\"'\s#]+)", block)
+        if target is None:
+            failures.append(
+                f"{rel}:{line_of(text, start)}: dependabot ecosystem {name!r} sets no target-branch, "
+                f"so its pull requests would bypass the PR gate; set target-branch: {branch!r}"
+            )
+        elif target.group(1) != branch:
+            failures.append(
+                f"{rel}:{line_of(text, start + target.start())}: dependabot ecosystem {name!r} targets "
+                f"{target.group(1)!r}; expected the integration branch {branch!r}"
+            )
+    return failures
+
+
+def check_dependabot() -> list[str]:
+    if not DEPENDABOT.is_file():
+        return []
+    return check_dependabot_text(
+        DEPENDABOT.read_text(encoding="utf-8"),
+        integration_branch(),
+        str(DEPENDABOT.relative_to(ROOT)),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Reject high-risk GitHub Actions patterns.")
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args()
     paths = [Path(value) for value in args.paths] if args.paths else sorted(WORKFLOWS.glob("*.y*ml"))
-    failures: list[str] = []
+    failures: list[str] = check_dependabot()
     for path in paths:
         if path.is_file():
             failures.extend(check(path.resolve()))
