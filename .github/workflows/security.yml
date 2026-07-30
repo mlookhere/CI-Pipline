@@ -11,10 +11,24 @@ on:
 
 permissions: {}
 
+# Two jobs below require GitHub Advanced Security, which is unavailable for a
+# private repository on this plan -- the same limitation that makes branch
+# protection and environments return 403. Left ungated they failed on every pull
+# request, which trains reviewers to ignore CI. They are gated on
+# ENABLE_ADVANCED_SECURITY so they skip (neutral, non-blocking) rather than fail,
+# and run unchanged once the variable is set to "true".
+#
+# Do not delete these gates to "fix the red checks". What they cover is retained:
+#   - dangerous workflow patterns: workflow/check_workflow_policy.py, which runs
+#     unconditionally in the workflow-policy job below and is stricter than
+#     CodeQL's Actions queries about the patterns this repository cares about.
+#   - vulnerable dependencies: pip-audit in the release stage. Note this means
+#     pull requests currently get no dependency scanning; tracked separately and
+#     blocked on the unresolved chromadb advisory.
 jobs:
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && vars.ENABLE_ADVANCED_SECURITY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -51,7 +65,7 @@ jobs:
 
   codeql-actions:
     name: CodeQL for Actions
-    if: github.event_name != 'merge_group'
+    if: github.event_name != 'merge_group' && vars.ENABLE_ADVANCED_SECURITY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
