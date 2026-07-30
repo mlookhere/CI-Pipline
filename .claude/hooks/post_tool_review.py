@@ -90,6 +90,8 @@ def validate_changed_files(root: Path) -> None:
         [sys.executable, str(validator), *paths],
         cwd=root,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         timeout=12,
     )

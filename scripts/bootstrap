@@ -6,12 +6,12 @@ if [[ "${1:-}" == "--ci" ]]; then
   CI_MODE=true
 fi
 
-SYSTEM_PYTHON="${PYTHON_BIN:-python3}"
-"$SYSTEM_PYTHON" - <<'PY_VERSION_CHECK'
-import sys
-if sys.version_info < (3, 10):
-    raise SystemExit("Python 3.10 or newer is required for the workflow tooling")
-PY_VERSION_CHECK
+# shellcheck source=scripts/lib/python.sh
+. "$ROOT/scripts/lib/python.sh"
+# resolve_system_python executes each candidate and checks the version, so a bare
+# `python3` that is really the Microsoft Store stub is rejected instead of aborting
+# this script at the first command it runs.
+SYSTEM_PYTHON="$(resolve_system_python)"
 
 CI_HOME="${CLAUDE_CI_HOME:-$HOME/.local/share/claude-code-ci/v2}"
 CI_VENV="$CI_HOME/venv"

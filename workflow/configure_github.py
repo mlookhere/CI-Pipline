@@ -49,6 +49,8 @@ def gh_api(endpoint: str, payload: dict[str, Any], *, method: str = "PUT", dry_r
         cwd=ROOT,
         input=json.dumps(payload),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
     )
     if result.returncode != 0:
@@ -68,7 +70,9 @@ def gh_output(endpoint: str, jq: str = "") -> str:
     ]
     if jq:
         command.extend(["--jq", jq])
-    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    result = subprocess.run(
+        command, cwd=ROOT, text=True, encoding="utf-8", errors="replace", capture_output=True
+    )
     return result.stdout.strip() if result.returncode == 0 else ""
 
 

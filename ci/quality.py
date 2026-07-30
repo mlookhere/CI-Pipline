@@ -44,7 +44,9 @@ def git_lines(*args: str) -> list[str]:
     and "git could not answer" indistinguishable: an unresolvable base ref
     produced an empty scope and the gate reported success having read nothing.
     """
-    result = subprocess.run(["git", *args], cwd=ROOT, text=True, capture_output=True)
+    result = subprocess.run(
+        ["git", *args], cwd=ROOT, text=True, encoding="utf-8", errors="replace", capture_output=True
+    )
     if result.returncode != 0:
         detail = result.stderr.strip().splitlines()
         raise ScopeError(
@@ -210,7 +212,9 @@ def run_tool(command: list[str], name: str, finding: str) -> str:
     reported a secret" and "detect-secrets could not start" demand opposite
     responses from whoever reads the gate output. Both still fail the gate.
     """
-    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    result = subprocess.run(
+        command, cwd=ROOT, text=True, encoding="utf-8", errors="replace", capture_output=True
+    )
     output = (result.stdout or "") + (result.stderr or "")
     if output.strip():
         print(output, end="" if output.endswith("\n") else "\n")

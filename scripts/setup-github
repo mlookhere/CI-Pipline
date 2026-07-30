@@ -5,6 +5,11 @@
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+# shellcheck source=scripts/lib/python.sh
+. "$ROOT/scripts/lib/python.sh"
+# One resolved interpreter for the whole script; a bare `python3` is the Microsoft
+# Store stub on Windows and would fail every JSON read below.
+PY="$(resolve_python)"
 command -v gh >/dev/null || { echo "GitHub CLI is required" >&2; exit 2; }
 gh auth status >/dev/null
 
@@ -32,10 +37,10 @@ create_label "risk:ci" "d93f0b" "CI or workflow policy change"
 create_label "risk:large-change" "d93f0b" "Change exceeds normal review-size budget"
 create_label "claude:review" "7057ff" "Run optional read-only Claude review"
 
-CONTROL_TITLE="$(python3 -c 'import json; print(json.load(open(".claude-workflow.json"))["github"]["control_issue_title"])')"
+CONTROL_TITLE="$("$PY" -c 'import json; print(json.load(open(".claude-workflow.json"))["github"]["control_issue_title"])')"
 CONTROL_NUMBER="$(
   gh issue list --state open --limit 100 --json number,title 2>/dev/null |
-  python3 -c 'import json, sys; title=sys.argv[1]; print(next((str(i["number"]) for i in json.load(sys.stdin) if i.get("title") == title), ""))' "$CONTROL_TITLE" || true
+  "$PY" -c 'import json, sys; title=sys.argv[1]; print(next((str(i["number"]) for i in json.load(sys.stdin) if i.get("title") == title), ""))' "$CONTROL_TITLE" || true
 )"
 if [[ -z "$CONTROL_NUMBER" ]]; then
   CONTROL_NUMBER="$(gh issue create --title "$CONTROL_TITLE" --label type:maintenance --body-file - <<'CONTROL_BODY' | sed -n 's#.*/issues/##p'
@@ -72,12 +77,12 @@ if [[ -n "$CONTROL_NUMBER" ]]; then
   fi
 fi
 
-python3 workflow/pin_actions.py
+"$PY" workflow/pin_actions.py
 gh variable set ENFORCE_PINNED_ACTIONS --body true >/dev/null || \
   echo "NOTE: set repository variable ENFORCE_PINNED_ACTIONS=true manually (needs admin)."
 
-INTEGRATION="$(python3 -c 'import json; print(json.load(open(".claude-workflow.json"))["branches"]["integration"])')"
-PRODUCTION="$(python3 -c 'import json; print(json.load(open(".claude-workflow.json"))["branches"]["production"])')"
+INTEGRATION="$("$PY" -c 'import json; print(json.load(open(".claude-workflow.json"))["branches"]["integration"])')"
+PRODUCTION="$("$PY" -c 'import json; print(json.load(open(".claude-workflow.json"))["branches"]["production"])')"
 
 protect_branch() {
   local branch="$1" checks_json="$2" reviews="$3"
@@ -98,10 +103,10 @@ PROTECTION
 if [[ "${SKIP_BRANCH_PROTECTION:-0}" == "1" ]]; then
   echo "WARNING: branch protection skipped by request."
 else
-  INT_CHECKS="$(python3 -c 'import json; c=json.load(open(".claude-workflow.json")); print(json.dumps(c["github"]["branch_protection"]["integration"]["required_checks"]))')"
-  PROD_CHECKS="$(python3 -c 'import json; c=json.load(open(".claude-workflow.json")); print(json.dumps(c["github"]["branch_protection"]["production"]["required_checks"]))')"
-  INT_REVIEWS="$(python3 -c 'import json; c=json.load(open(".claude-workflow.json")); print(c["github"]["branch_protection"]["integration"]["required_approving_reviews"])')"
-  PROD_REVIEWS="$(python3 -c 'import json; c=json.load(open(".claude-workflow.json")); print(c["github"]["branch_protection"]["production"]["required_approving_reviews"])')"
+  INT_CHECKS="$("$PY" -c 'import json; c=json.load(open(".claude-workflow.json")); print(json.dumps(c["github"]["branch_protection"]["integration"]["required_checks"]))')"
+  PROD_CHECKS="$("$PY" -c 'import json; c=json.load(open(".claude-workflow.json")); print(json.dumps(c["github"]["branch_protection"]["production"]["required_checks"]))')"
+  INT_REVIEWS="$("$PY" -c 'import json; c=json.load(open(".claude-workflow.json")); print(c["github"]["branch_protection"]["integration"]["required_approving_reviews"])')"
+  PROD_REVIEWS="$("$PY" -c 'import json; c=json.load(open(".claude-workflow.json")); print(c["github"]["branch_protection"]["production"]["required_approving_reviews"])')"
   protect_branch "$INTEGRATION" "$INT_CHECKS" "$INT_REVIEWS"
   protect_branch "$PRODUCTION" "$PROD_CHECKS" "$PROD_REVIEWS"
 fi

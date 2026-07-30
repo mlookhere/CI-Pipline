@@ -172,7 +172,12 @@ def main() -> int:
         "stage": args.stage,
         "success": success,
         "commit": subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
         ).stdout.strip(),
         "started_at": stage_started.isoformat(),
         "ended_at": stage_ended.isoformat(),

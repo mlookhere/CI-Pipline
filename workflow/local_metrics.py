@@ -13,7 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def common_state() -> Path:
-    value = subprocess.check_output(["git", "rev-parse", "--git-common-dir"], cwd=ROOT, text=True).strip()
+    value = subprocess.check_output(
+        ["git", "rev-parse", "--git-common-dir"], cwd=ROOT, text=True, encoding="utf-8", errors="replace"
+    ).strip()
     path = Path(value)
     return ((ROOT / path).resolve() if not path.is_absolute() else path.resolve()) / "claude"
 

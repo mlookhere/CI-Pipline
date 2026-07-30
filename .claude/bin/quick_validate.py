@@ -36,7 +36,9 @@ WEAKEN = re.compile(r"(?i)(?:eslint-disable|type:\s*ignore|#\s*noqa|coverage:\s*
 
 
 def run_git(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], check=False, capture_output=True, text=True)
+    return subprocess.run(
+        ["git", *args], check=False, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
 
 
 def added_text(path: Path, full_text: str) -> str:

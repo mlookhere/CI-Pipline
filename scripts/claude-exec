@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+# shellcheck source=scripts/lib/python.sh
+. "$ROOT/scripts/lib/python.sh"
+PY="$(resolve_python)"
 COMMON="$(git -C "$ROOT" rev-parse --git-common-dir)"
 if [[ "$COMMON" != /* ]]; then COMMON="$ROOT/$COMMON"; fi
 RUNS="$COMMON/claude/runs"
@@ -41,7 +44,7 @@ claude --bare -p "$*" \
 status=$?
 set -e
 
-python3 - "$RESULT" "$FINAL" <<'PY2'
+"$PY" - "$RESULT" "$FINAL" <<'PY2'
 import json
 import pathlib
 import sys
@@ -55,7 +58,7 @@ except Exception as exc:
 out.write_text(text + "\n", encoding="utf-8")
 PY2
 
-python3 "$ROOT/workflow/claude_usage_report.py" "$RESULT" --output "$USAGE" >/dev/null || true
+"$PY" "$ROOT/workflow/claude_usage_report.py" "$RESULT" --output "$USAGE" >/dev/null || true
 chmod 600 "$RESULT" "$FINAL" "$USAGE" 2>/dev/null || true
 cat "$FINAL"
 printf '

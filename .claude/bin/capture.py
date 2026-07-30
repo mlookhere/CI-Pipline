@@ -70,12 +70,21 @@ def main() -> int:
     args = parser.parse_args()
     command = base64.urlsafe_b64decode(args.encoded.encode()).decode()
     root_text = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"], text=True, capture_output=True
+        ["git", "rev-parse", "--show-toplevel"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
     ).stdout.strip()
     root = Path(root_text or ".").resolve()
     common = (
         subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"], cwd=root, text=True, capture_output=True
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=root,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
         ).stdout.strip()
         or ".git"
     )
@@ -114,6 +123,7 @@ def main() -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             errors="replace",
             env=safe_environment(),
         )

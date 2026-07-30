@@ -24,7 +24,9 @@ PLACEHOLDER_PATTERNS = (
 
 
 def gh_json(*args: str) -> Any:
-    result = subprocess.run(["gh", *args], cwd=ROOT, text=True, capture_output=True)
+    result = subprocess.run(
+        ["gh", *args], cwd=ROOT, text=True, encoding="utf-8", errors="replace", capture_output=True
+    )
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
         raise SystemExit(result.returncode)

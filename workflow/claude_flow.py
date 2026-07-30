@@ -36,12 +36,33 @@ def shell(
 ) -> subprocess.CompletedProcess[str]:
     if not capture:
         print("$ " + " ".join(shlex.quote(part) for part in command), flush=True)
-    return subprocess.run(command, cwd=cwd, check=check, text=True, capture_output=capture)
+    # UTF-8 explicitly. `text=True` on its own decodes with the platform preferred
+    # encoding, which on Windows is a code page such as cp1252, while GitHub Issue and PR
+    # bodies are UTF-8. Read that way an em dash becomes three mojibake characters, and
+    # cmd_handoff writes the mangled text straight back, so the corruption persists.
+    # errors="replace" keeps an undecodable byte from raising inside subprocess's reader
+    # thread, which would otherwise return stdout as None alongside returncode 0.
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        check=check,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=capture,
+    )
 
 
 def output(command: list[str], *, cwd: Path = ROOT) -> str:
     result = shell(command, cwd=cwd, check=False, capture=True)
-    return result.stdout.strip() if result.returncode == 0 else ""
+    if result.returncode != 0:
+        return ""
+    if result.stdout is None:
+        # "Read nothing" and "could not read" must not be indistinguishable. Callers read
+        # "" as a definite absence -- no such branch, no open PR, no lease -- and act on
+        # it, so a failure to capture has to stop the command instead of impersonating one.
+        fail("no output could be captured from: " + " ".join(shlex.quote(part) for part in command))
+    return result.stdout.strip()
 
 
 def fail(message: str) -> NoReturn:
@@ -380,19 +401,64 @@ def cmd_detect(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_doctor(_: argparse.Namespace) -> int:
-    config = load_config()
+def stage_command(stage: str) -> list[str]:
+    """How to run a CI stage from Python.
+
+    Not `ci/run`: that is a bash shim with no extension, and Windows CreateProcess does not
+    consult shebangs, so executing it raises WinError 193 before any gate runs. The shim's
+    only job is resolving an interpreter, and `sys.executable` is already the one the `flow`
+    shim resolved, so calling the stage runner's Python entry point keeps the same runtime
+    and works on both platforms.
+    """
+    return [sys.executable, str(ROOT / "ci" / "run.py"), stage]
+
+
+def venv_tool(venv: Path, tool: str) -> Path | None:
+    """Locate a venv-installed tool in either layout: Windows `Scripts/`, POSIX `bin/`."""
+    for relative in (f"Scripts/{tool}.exe", f"bin/{tool}"):
+        candidate = venv / relative
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def resolved_python() -> str:
+    """The interpreter the bash entry points would select, or "" when none works.
+
+    Checking `command -v python3` instead reports success for the Microsoft Store stub,
+    which sits on PATH and exits without running anything. Deferring to resolve_python
+    means doctor validates the path the scripts actually take, including its requirement
+    that a candidate execute before being accepted.
+    """
+    library = ROOT / "scripts" / "lib" / "python.sh"
+    return output(["bash", "-lc", f". {shlex.quote(str(library))} && resolve_python"])
+
+
+def ci_home_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_CI_HOME", Path.home() / ".local/share/claude-code-ci/v2"))
+
+
+def doctor_environment(interpreter: str) -> tuple[list[str], list[str]]:
+    """Toolchain findings: what must be present, and what merely should be."""
     failures: list[str] = []
     warnings: list[str] = []
-    for tool in ["git", "python3"]:
-        if not output(["bash", "-lc", f"command -v {shlex.quote(tool)}"]):
-            failures.append(f"missing required tool: {tool}")
+    if not output(["bash", "-lc", "command -v git"]):
+        failures.append("missing required tool: git")
+    if not interpreter:
+        failures.append(
+            "no working Python 3.10+ interpreter resolves; run ./scripts/bootstrap or set PYTHON_BIN"
+        )
     for tool in ["gh", "claude", "docker"]:
         if not output(["bash", "-lc", f"command -v {shlex.quote(tool)}"]):
             warnings.append(f"optional tool unavailable: {tool}")
-    ci_home = Path(os.environ.get("CLAUDE_CI_HOME", Path.home() / ".local/share/claude-code-ci/v2"))
-    if not (ci_home / "venv" / "bin" / "pre-commit").exists():
+    if not venv_tool(ci_home_dir() / "venv", "pre-commit"):
         warnings.append("global CI tool venv is missing; run ./scripts/bootstrap")
+    return failures, warnings
+
+
+def doctor_repository(config: dict[str, Any]) -> list[str]:
+    """Findings about the repository's own configuration and entry points."""
+    failures: list[str] = []
     for branch_type, branch in config["branches"].items():
         if not output(["git", "check-ref-format", "--branch", branch]):
             failures.append(f"invalid {branch_type} branch name: {branch}")
@@ -400,7 +466,17 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         path = ROOT / script
         if not path.exists() or not os.access(path, os.X_OK):
             failures.append(f"missing or non-executable: {script}")
+    return failures
+
+
+def cmd_doctor(_: argparse.Namespace) -> int:
+    config = load_config()
+    interpreter = resolved_python()
+    failures, warnings = doctor_environment(interpreter)
+    failures += doctor_repository(config)
     print("Repository:", ROOT)
+    print("Interpreter:", interpreter or "unresolved")
+    print("CI runtime:", ci_home_dir() / "venv")
     print("Integration branch:", config["branches"]["integration"])
     print("Production branch:", config["branches"]["production"])
     print("Configured stages:")
@@ -538,14 +614,18 @@ def managed_block(state: str) -> str:
 def replace_managed_block(body: str, replacement: str) -> str:
     pattern = re.compile(re.escape(STATE_START) + r".*?" + re.escape(STATE_END), re.DOTALL)
     if pattern.search(body):
-        return pattern.sub(replacement, body)
+        # A function replacement, never the string itself: re.sub reads a string
+        # replacement as a template, so a backslash in handoff state is expanded rather
+        # than kept. A Windows path such as F:\PROJECTs raised `bad escape \P` and aborted
+        # the handoff outright; `\1` would have silently substituted a capture group.
+        return pattern.sub(lambda _: replacement, body)
     return body.rstrip() + "\n\n" + replacement + "\n"
 
 
 def replace_control_block(body: str, replacement: str) -> str:
     pattern = re.compile(re.escape(CONTROL_START) + r".*?" + re.escape(CONTROL_END), re.DOTALL)
     if pattern.search(body):
-        return pattern.sub(replacement, body)
+        return pattern.sub(lambda _: replacement, body)
     if body.strip():
         return replacement + "\n\n## Previous control notes\n\n" + body.strip() + "\n"
     return replacement + "\n\n## Current hazards\n\nNone recorded.\n"
@@ -883,8 +963,8 @@ def cmd_pr(args: argparse.Namespace) -> int:
     require_gh()
     config = load_config()
     branch = require_task_branch(args.issue, config)
-    shell([str(ROOT / "ci" / "run"), "fast"])
-    shell([str(ROOT / "ci" / "run"), "pr"])
+    shell(stage_command("fast"))
+    shell(stage_command("pr"))
     shell(["git", "push", "--set-upstream", "origin", branch])
     pr = open_pr_for_branch(args.issue, branch, config)
     copy_risk_labels_to_pr(args.issue, int(pr["number"]))

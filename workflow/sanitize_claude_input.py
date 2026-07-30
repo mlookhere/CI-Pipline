@@ -31,9 +31,11 @@ def main():
         subprocess.check_output(
             ["gh", "pr", "view", a.pr, "--json", "number,title,body,labels,files,baseRefName,headRefName"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     )
-    diff = subprocess.check_output(["gh", "pr", "diff", a.pr], text=True, errors="replace")
+    diff = subprocess.check_output(["gh", "pr", "diff", a.pr], text=True, encoding="utf-8", errors="replace")
     chunks = []
     current = []
     name = ""

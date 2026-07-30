@@ -14,7 +14,9 @@ CONFIG = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8")
 
 
 def gh(*args: str, capture: bool = False) -> str:
-    result = subprocess.run(["gh", *args], cwd=ROOT, text=True, capture_output=capture)
+    result = subprocess.run(
+        ["gh", *args], cwd=ROOT, text=True, encoding="utf-8", errors="replace", capture_output=capture
+    )
     if result.returncode != 0:
         if capture:
             print(result.stderr, file=sys.stderr)

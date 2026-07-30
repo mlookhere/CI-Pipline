@@ -30,7 +30,14 @@ SECRET_PATTERNS = {
 def run(args: list[str], *, cwd: Path | None = None, timeout: int = 8) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
-            args, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout
+            args,
+            cwd=cwd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return subprocess.CompletedProcess(args, 127, "", "")

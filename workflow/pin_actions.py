@@ -20,6 +20,8 @@ def resolve(repo: str, ref: str) -> str:
     result = subprocess.run(
         ["gh", "api", f"repos/{repo}/commits/{ref}", "--jq", ".sha"],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
     )
     if result.returncode != 0:

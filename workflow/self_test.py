@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -165,6 +166,98 @@ def check_tracked_artifacts() -> list[str]:
     ]
 
 
+def subprocess_reads(tree: ast.AST) -> list[tuple[int, set[str]]]:
+    """Every `subprocess.run`/`check_output`/`Popen` call, with the keywords it passes."""
+    calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if not (
+            isinstance(function, ast.Attribute)
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "subprocess"
+            and function.attr in {"run", "check_output", "Popen"}
+        ):
+            continue
+        keywords = {keyword.arg for keyword in node.keywords if keyword.arg}
+        if function.attr == "check_output":
+            keywords.add("__always_captures__")
+        calls.append((node.lineno, keywords))
+    return calls
+
+
+def check_subprocess_decoding() -> list[str]:
+    """A captured subprocess read must name its codec instead of inheriting the locale's.
+
+    `text=True` with no `encoding=` decodes using the platform preferred encoding. On
+    Windows that is a code page such as cp1252, while `gh` and `git` emit UTF-8, so an em
+    dash in an Issue body is read as mojibake and written back corrupted -- and a byte the
+    code page does not define raises inside subprocess's reader thread, leaving `stdout` as
+    None with returncode 0. Both failures are invisible at the call site, which is why this
+    is a gate rather than a review habit (Issue #35).
+    """
+    failures = []
+    for relative in sorted(path for path in tracked_files() if path.endswith(".py")):
+        path = ROOT / relative
+        if not path.is_file():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue  # check_python reports the syntax error itself
+        for line, keywords in subprocess_reads(tree):
+            decodes = {"text", "universal_newlines", "encoding"} & keywords
+            captures = {"capture_output", "stdout", "__always_captures__"} & keywords
+            if decodes and captures and "encoding" not in keywords:
+                failures.append(
+                    f"{relative}:{line}: captured subprocess output is decoded with the locale "
+                    'codec; pass encoding="utf-8"'
+                )
+    return failures
+
+
+def check_entry_point_interpreters() -> list[str]:
+    """No entry point may depend on a bare `python3`.
+
+    Windows CreateProcess ignores shebangs outright, and `python3` on PATH is routinely the
+    Microsoft Store stub: present, executable, and exits 49 without running anything.
+    scripts/lib/python.sh resolves a real interpreter by executing each candidate, so entry
+    points have to go through it (Issue #35).
+    """
+    failures = []
+    for relative in sorted(tracked_files()):
+        path = ROOT / relative
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        lines = text.splitlines()
+        shebang = lines[0] if lines and lines[0].startswith("#!") else ""
+        # Only files invoked by path are entry points. A `.py` module carries its shebang
+        # vestigially -- callers run it as `"$(resolve_python)" module.py` -- so the shebang
+        # is never consulted and is not a defect.
+        if "python" in shebang and not relative.endswith(".py"):
+            failures.append(
+                f"{relative}:1: entry point uses a {shebang.strip()!r} shebang, which Windows "
+                'ignores; make it a bash wrapper that execs "$(resolve_python)" instead'
+            )
+        # python.sh is where the probing lives, so it is the one file that may name python3.
+        if not shebang.endswith(("bash", "sh")) or relative == "scripts/lib/python.sh":
+            continue
+        for number, line in enumerate(lines, start=1):
+            if line.lstrip().startswith("#"):
+                continue
+            if re.search(r"(?<![-\w])python3\b", line):
+                failures.append(
+                    f"{relative}:{number}: invokes a bare python3; source scripts/lib/python.sh "
+                    "and use resolve_python (or resolve_system_python) instead"
+                )
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate the repository-owned Claude Code workflow control plane."
@@ -201,6 +294,8 @@ def main() -> int:
     failures += check_labels(config)
     warnings += collect_warnings(config)
     failures += check_tracked_artifacts()
+    failures += check_subprocess_decoding()
+    failures += check_entry_point_interpreters()
 
     check_python(failures)
 
@@ -208,6 +303,8 @@ def main() -> int:
         [sys.executable, str(ROOT / "workflow" / "check_workflow_policy.py")],
         cwd=ROOT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
     )
     if policy.returncode != 0:

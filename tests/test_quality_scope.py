@@ -36,6 +36,8 @@ def git(repo: Path, *args: str) -> str:
         ["git", *GIT_IDENTITY, *args],
         cwd=repo,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=True,
     )
