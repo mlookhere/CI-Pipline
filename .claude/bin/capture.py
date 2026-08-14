@@ -8,8 +8,18 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+# workflow/ is not an importable package. Extending the path is preferable to a second copy
+# of the resolver: a captured command must run in the same bash the gates run in, or the
+# capture reports a different environment than the one under test.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "workflow"))
+
+# E402 is suppressed for that reason alone -- the import cannot resolve until sys.path is
+# extended above. Same pattern as ci/run.py and tests/test_workflow_policy.py.
+from bash_tools import bash_command  # noqa: E402
 
 SENSITIVE_ENV = re.compile(
     r"(?i)(?:key|secret|token|password|passwd|cookie|credential|auth)|^(?:AWS|AZURE|GOOGLE|GITHUB|OPENAI)_"
@@ -118,7 +128,7 @@ def main() -> int:
         handle.write(f"$ {redact(command)}\n[command-sha256 {digest}]\n\n")
         handle.flush()
         process = subprocess.Popen(
-            ["bash", "--noprofile", "--norc", "-o", "pipefail", "-c", command],
+            [bash_command(), "--noprofile", "--norc", "-o", "pipefail", "-c", command],
             cwd=root,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

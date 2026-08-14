@@ -73,10 +73,22 @@ def state_dir(root: Path) -> Path:
 
 
 def read_event() -> dict[str, Any]:
+    """Read the hook payload as UTF-8 rather than through the locale codec.
+
+    `json.load(sys.stdin)` decodes with whatever `sys.stdin.encoding` happens to be -- a
+    code page such as cp1252 on Windows unless PYTHONIOENCODING is set -- while Claude Code
+    sends UTF-8. A prompt or command containing a curly quote or an emoji then decodes wrong
+    or raises UnicodeDecodeError, which is not caught below, and a hook that dies is a hook
+    that stops enforcing policy without failing anything visible (Issue #35).
+    """
     try:
-        value = json.load(sys.stdin)
+        raw = sys.stdin.buffer.read()
+    except (OSError, ValueError):
+        return {}
+    try:
+        value = json.loads(raw.decode("utf-8", errors="replace"))
         return value if isinstance(value, dict) else {}
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError:
         return {}
 
 

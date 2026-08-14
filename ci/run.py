@@ -15,6 +15,15 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / ".claude-workflow.json"
 ARTIFACT_DIR = ROOT / "artifacts" / "ci"
 
+# workflow/ is not an importable package, so the path is extended rather than the resolver
+# duplicated here: claude_flow and self_test shell out to bash for the same reasons and must
+# agree with this file about which bash that is.
+sys.path.insert(0, str(ROOT / "workflow"))
+
+# E402 is suppressed for that reason alone -- the import cannot resolve until sys.path is
+# extended above. Same pattern as tests/test_workflow_policy.py.
+from bash_tools import bash_command  # noqa: E402
+
 
 def ci_home() -> Path:
     """Root of the global CI runtime that scripts/bootstrap provisions."""
@@ -37,7 +46,7 @@ def run_command(command: str, env: dict[str, str]) -> dict[str, Any]:
     started = dt.datetime.now(dt.timezone.utc)
     print(f"\n$ {command}", flush=True)
     result = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-o", "pipefail", "-c", command],
+        [bash_command(), "--noprofile", "--norc", "-o", "pipefail", "-c", command],
         cwd=ROOT,
         env=env,
         text=True,

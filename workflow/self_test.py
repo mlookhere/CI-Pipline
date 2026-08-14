@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from bash_tools import bash_command
+
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_HOOK_EVENTS = {
     "SessionStart",
@@ -28,6 +30,9 @@ REQUIRED_HOOK_EVENTS = {
 REQUIRED_PR_SECTIONS = {"Issue", "Result", "Implementation", "Verification", "Risk", "Remaining work"}
 # `python3` as a command, not as part of resolve_python, PYTHON3_BIN, or a path fragment.
 BARE_PYTHON3 = re.compile(r"(?<![-\w])python3\b")
+SUBPROCESS_READERS = {"run", "check_output", "Popen"}
+# Redirection targets that hand output nowhere a codec could apply.
+NON_CAPTURING_TARGETS = {"DEVNULL", "STDOUT"}
 EXECUTABLES = (
     "flow",
     "ci/run",
@@ -71,7 +76,8 @@ def check_python(failures: list[str]) -> None:
 def command_exists(command: str) -> bool:
     return (
         subprocess.run(
-            ["bash", "--noprofile", "--norc", "-c", f"command -v {command}"], capture_output=True
+            [bash_command(), "--noprofile", "--norc", "-c", f"command -v {command}"],
+            capture_output=True,
         ).returncode
         == 0
     )
@@ -102,6 +108,13 @@ def check_hook_entry(event: str, hook: dict) -> list[str]:
     match = re.search(r"/\.claude/hooks/([A-Za-z0-9_.-]+)", command)
     if match and not (ROOT / ".claude" / "hooks" / match.group(1)).is_file():
         failures.append(f".claude/settings.json: {event} references missing {match.group(1)}")
+    # A hook command is an entry point too, and a silently dead hook stops enforcing policy
+    # without failing anything. On Windows `python3` is the Microsoft Store stub (Issue #35).
+    if BARE_PYTHON3.search(command):
+        failures.append(
+            f".claude/settings.json: {event} launches a bare python3, which on Windows is a "
+            "stub that exits without running the hook"
+        )
     timeout = int(hook.get("timeout", 0) or 0)
     if timeout <= 0 or timeout > 60:
         failures.append(f".claude/settings.json: {event} timeout must be within 1..60 seconds")
@@ -168,25 +181,99 @@ def check_tracked_artifacts() -> list[str]:
     ]
 
 
-def subprocess_reads(tree: ast.AST) -> list[tuple[int, set[str]]]:
-    """Every `subprocess.run`/`check_output`/`Popen` call, with the keywords it passes."""
+def subprocess_aliases(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """The names in this module that reach a subprocess reader.
+
+    Returned as (module aliases, directly imported function names). Matching only
+    `subprocess.run` would let `import subprocess as sp` or `from subprocess import run`
+    reintroduce the defect in front of a green gate.
+    """
+    modules = {"subprocess"}
+    functions: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess" and alias.asname:
+                    modules.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for alias in node.names:
+                if alias.name in SUBPROCESS_READERS:
+                    functions.add(alias.asname or alias.name)
+    return modules, functions
+
+
+def reader_name(node: ast.Call, modules: set[str], functions: set[str]) -> str | None:
+    target = node.func
+    if (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id in modules
+        and target.attr in SUBPROCESS_READERS
+    ):
+        return target.attr
+    if isinstance(target, ast.Name) and target.id in functions:
+        return target.id
+    return None
+
+
+def subprocess_reads(tree: ast.AST) -> list[tuple[int, dict[str, ast.expr | None]]]:
+    """Every subprocess read in `tree`, mapped to the keyword arguments it passes.
+
+    Values are kept, not just names: `stdout=subprocess.DEVNULL` reads nothing back while
+    `stdout=subprocess.PIPE` does, and flagging the first would demand a codec for output
+    nobody decodes. `**kwargs` is recorded under `"**"` because its contents cannot be known
+    here, and `check_output` captures whether or not it says so.
+    """
+    modules, functions = subprocess_aliases(tree)
     calls = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        function = node.func
-        if not (
-            isinstance(function, ast.Attribute)
-            and isinstance(function.value, ast.Name)
-            and function.value.id == "subprocess"
-            and function.attr in {"run", "check_output", "Popen"}
-        ):
+        name = reader_name(node, modules, functions)
+        if name is None:
             continue
-        keywords = {keyword.arg for keyword in node.keywords if keyword.arg}
-        if function.attr == "check_output":
-            keywords.add("__always_captures__")
+        keywords: dict[str, ast.expr | None] = {
+            keyword.arg or "**": keyword.value for keyword in node.keywords
+        }
+        if name == "check_output":
+            keywords["__always_captures__"] = None
         calls.append((node.lineno, keywords))
     return calls
+
+
+def is_constant(node: ast.expr | None, value: object) -> bool:
+    return isinstance(node, ast.Constant) and node.value is value
+
+
+def attribute_name(node: ast.expr | None) -> str:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else ""
+
+
+def names_codec(keywords: dict[str, ast.expr | None]) -> bool:
+    """`encoding=None` names nothing: it is the locale codec spelled out."""
+    return "encoding" in keywords and not is_constant(keywords["encoding"], None)
+
+
+def decodes_output(keywords: dict[str, ast.expr | None]) -> bool:
+    switched = any(
+        name in keywords and not is_constant(keywords[name], False) for name in ("text", "universal_newlines")
+    )
+    return switched or names_codec(keywords)
+
+
+def captures_output(keywords: dict[str, ast.expr | None]) -> bool:
+    """Unrecognised redirection counts as a capture; only a known discard is exempt."""
+    if "__always_captures__" in keywords or "**" in keywords:
+        return True
+    if "capture_output" in keywords and not is_constant(keywords["capture_output"], False):
+        return True
+    return any(
+        attribute_name(keywords[name]) not in NON_CAPTURING_TARGETS
+        for name in ("stdout", "stderr")
+        if name in keywords
+    )
 
 
 def check_subprocess_decoding() -> list[str]:
@@ -209,9 +296,7 @@ def check_subprocess_decoding() -> list[str]:
         except SyntaxError:
             continue  # check_python reports the syntax error itself
         for line, keywords in subprocess_reads(tree):
-            decodes = {"text", "universal_newlines", "encoding"} & keywords
-            captures = {"capture_output", "stdout", "__always_captures__"} & keywords
-            if decodes and captures and "encoding" not in keywords:
+            if decodes_output(keywords) and captures_output(keywords) and not names_codec(keywords):
                 failures.append(
                     f"{relative}:{line}: captured subprocess output is decoded with the locale "
                     'codec; pass encoding="utf-8"'

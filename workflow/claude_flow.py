@@ -14,12 +14,16 @@ from pathlib import Path
 from typing import Any, NoReturn
 from urllib.parse import quote
 
+from bash_tools import bash_command
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / ".claude-workflow.json"
 STATE_START = "<!-- claude-state:start -->"
 STATE_END = "<!-- claude-state:end -->"
 CONTROL_START = "<!-- claude-control:start -->"
 CONTROL_END = "<!-- claude-control:end -->"
+# What errors="replace" leaves behind when a byte could not be decoded.
+REPLACEMENT = "�"
 REQUIRED_STATE_HEADINGS = [
     "## Current implementation state",
     "## Decisions",
@@ -431,7 +435,26 @@ def resolved_python() -> str:
     that a candidate execute before being accepted.
     """
     library = ROOT / "scripts" / "lib" / "python.sh"
-    return output(["bash", "-lc", f". {shlex.quote(str(library))} && resolve_python"])
+    # --noprofile --norc, not -l: a login shell sources profiles, and anything they print
+    # lands in the captured value, so doctor would report a banner as an interpreter path.
+    # The entry points source python.sh directly, so this is also the faithful comparison.
+    candidate = output(
+        [
+            bash_command(),
+            "--noprofile",
+            "--norc",
+            "-c",
+            f". {shlex.quote(str(library))} && resolve_python",
+        ]
+    )
+    if not candidate:
+        return ""
+    probe = shell(
+        [candidate, "-c", "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"],
+        check=False,
+        capture=True,
+    )
+    return candidate if probe.returncode == 0 else ""
 
 
 def ci_home_dir() -> Path:
@@ -442,14 +465,14 @@ def doctor_environment(interpreter: str) -> tuple[list[str], list[str]]:
     """Toolchain findings: what must be present, and what merely should be."""
     failures: list[str] = []
     warnings: list[str] = []
-    if not output(["bash", "-lc", "command -v git"]):
+    if not output([bash_command(), "-lc", "command -v git"]):
         failures.append("missing required tool: git")
     if not interpreter:
         failures.append(
             "no working Python 3.10+ interpreter resolves; run ./scripts/bootstrap or set PYTHON_BIN"
         )
     for tool in ["gh", "claude", "docker"]:
-        if not output(["bash", "-lc", f"command -v {shlex.quote(tool)}"]):
+        if not output([bash_command(), "-lc", f"command -v {shlex.quote(tool)}"]):
             warnings.append(f"optional tool unavailable: {tool}")
     if not venv_tool(ci_home_dir() / "venv", "pre-commit"):
         warnings.append("global CI tool venv is missing; run ./scripts/bootstrap")
@@ -773,32 +796,71 @@ _Last synchronized by `./flow sync-control`._
 {CONTROL_END}"""
 
 
-def write_issue_body(number: Any, body: str, *, prefix: str) -> None:
-    """Replace an Issue body, via a UTF-8 file so the text is never passed through argv.
+def guard_lossy_body(label: str, body: str, original: str | None) -> None:
+    """Refuse to persist text that this tool made lossy.
 
-    Refuses to write a body carrying U+FFFD. Reads decode with errors="replace" so that an
-    undecodable byte cannot kill the command, but that turns a lossy read into a silent
-    write, and an Issue body is handoff truth. A replacement character means information
-    was already lost upstream, so this stops rather than persisting the loss.
+    Reads decode with errors="replace" so an undecodable byte cannot kill the command, but
+    that turns a lossy read into a silent write, and an Issue body is handoff truth. A
+    replacement character that was not there before means information was lost on the way
+    in, so this stops rather than persisting the loss.
+
+    Text that already carried U+FFFD keeps the right to be written back. Refusing that too
+    would leave a body corrupted by the pre-#35 code permanently unrepairable, and would let
+    one stray character in an unrelated Issue title -- the control body is composed from
+    every active Issue's title -- wedge every control-plane command with no way out.
+    Counting is deliberately coarse: it cannot tell a moved replacement character from a
+    preserved one, and errs toward allowing the write it can prove is not lossier.
     """
-    if "�" in body:
+    already = (original or "").count(REPLACEMENT)
+    carried = body.count(REPLACEMENT)
+    if carried > already:
         fail(
-            f"refusing to write Issue #{number}: the body contains U+FFFD, so some of it could "
-            "not be decoded. Inspect the Issue before rerunning."
+            f"refusing to write {label}: {carried - already} character(s) could not be decoded "
+            "on the way in. Inspect the source before rerunning."
         )
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", prefix=prefix, suffix=".md", delete=False
-    ) as handle:
-        handle.write(body)
-        temporary = Path(handle.name)
+    if carried:
+        print(
+            f"warning: {label} already carried {carried} replacement character(s); this write "
+            "preserves them rather than introducing them.",
+            file=sys.stderr,
+        )
+
+
+def write_with_body_file(
+    command: list[str], body: str, *, label: str, prefix: str, original: str | None = None
+) -> None:
+    """Run a `gh` command with `body` supplied through a UTF-8 file instead of argv.
+
+    newline="" matters as much as the codec. Text mode translates every LF to CRLF on
+    Windows, so the body GitHub stored would not be the body that was read, and each cycle
+    would add another CR -- the same silent corruption of handoff truth as the locale codec,
+    reintroduced by the fix for it (Issue #35).
+    """
+    guard_lossy_body(label, body, original)
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", newline="", prefix=prefix, suffix=".md", delete=False
+    )
+    temporary = Path(handle.name)
     try:
-        shell(["gh", "issue", "edit", str(number), "--body-file", str(temporary)])
+        with handle:
+            handle.write(body)
+        shell([*command, "--body-file", str(temporary)])
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def write_control_body(number: Any, updated: str) -> None:
-    write_issue_body(number, updated, prefix="claude-control-")
+def write_issue_body(number: Any, body: str, *, prefix: str, original: str | None = None) -> None:
+    write_with_body_file(
+        ["gh", "issue", "edit", str(number)],
+        body,
+        label=f"Issue #{number}",
+        prefix=prefix,
+        original=original,
+    )
+
+
+def write_control_body(number: Any, updated: str, original: str | None = None) -> None:
+    write_issue_body(number, updated, prefix="claude-control-", original=original)
 
 
 def sync_control(config: dict[str, Any] | None = None) -> None:
@@ -819,7 +881,7 @@ def sync_control(config: dict[str, Any] | None = None) -> None:
     if updated == body:
         print(f"Control Issue #{control['number']} is already current.")
         return
-    write_control_body(control["number"], updated)
+    write_control_body(control["number"], updated, original=body)
     print(f"Control Issue #{control['number']} synchronized.")
 
 
@@ -873,10 +935,13 @@ def cmd_handoff(args: argparse.Namespace) -> int:
             "Re-read it, reconcile the other session's update, and rerun ./flow handoff."
         )
 
-    write_issue_body(args.issue, updated, prefix=f"claude-issue-{args.issue}-")
+    write_issue_body(args.issue, updated, prefix=f"claude-issue-{args.issue}-", original=body)
 
     verified = issue_snapshot(args.issue)
-    if managed_block(state_with_checkpoint) not in (verified.get("body") or ""):
+    # Compare content, not line-ending convention: GitHub may hand back CRLF for a body that
+    # was uploaded with LF, and that difference is transport, not loss.
+    stored = (verified.get("body") or "").replace("\r\n", "\n")
+    if managed_block(state_with_checkpoint).replace("\r\n", "\n") not in stored:
         fail(f"Issue #{args.issue} did not retain the expected managed handoff block")
     print(
         f"Issue #{args.issue} now contains current handoff state for commit {output(['git', 'rev-parse', '--short=12', 'HEAD']) or 'unknown'}."
@@ -942,8 +1007,14 @@ def open_pr_for_branch(issue_number: int, branch: str, config: dict[str, Any]) -
         pr: dict[str, Any] = json.loads(existing)[0]
         print(f"Pull request already open: {pr['url']}")
         return pr
-    issue = json.loads(output(["gh", "issue", "view", str(issue_number), "--json", "title,body,labels"]))
-    shell(
+    # `output()` returns "" for a failed command, and this runs after the push: an unguarded
+    # json.loads would raise JSONDecodeError with the branch already published and no PR.
+    issue = json.loads(
+        output(["gh", "issue", "view", str(issue_number), "--json", "title,body,labels"]) or "{}"
+    )
+    if not issue:
+        fail(f"unable to read Issue #{issue_number}; the branch is pushed but no PR was opened")
+    write_with_body_file(
         [
             "gh",
             "pr",
@@ -952,9 +1023,11 @@ def open_pr_for_branch(issue_number: int, branch: str, config: dict[str, Any]) -
             config["branches"]["integration"],
             "--title",
             f"#{issue_number}: {issue['title']}",
-            "--body",
-            compose_pr_body(issue_number, issue),
-        ]
+        ],
+        compose_pr_body(issue_number, issue),
+        label=f"the pull request for Issue #{issue_number}",
+        prefix=f"claude-pr-{issue_number}-",
+        original=str(issue.get("body") or ""),
     )
     created = json.loads(
         output(
@@ -986,7 +1059,11 @@ def cmd_release(args: argparse.Namespace) -> int:
     config = load_config()
     integration = config["branches"]["integration"]
     production = config["branches"]["production"]
-    issue = json.loads(output(["gh", "issue", "view", str(args.issue), "--json", "title,body,labels,state"]))
+    issue = json.loads(
+        output(["gh", "issue", "view", str(args.issue), "--json", "title,body,labels,state"]) or "{}"
+    )
+    if not issue:
+        fail(f"unable to read release Issue #{args.issue}")
     issue_labels = {str(item.get("name")) for item in issue.get("labels", [])}
     if str(issue.get("state", "")).upper() != "OPEN":
         fail(f"release Issue #{args.issue} must remain open")
@@ -1013,7 +1090,7 @@ def cmd_release(args: argparse.Namespace) -> int:
         print(f"Release pull request already open: {pr['url']}")
     else:
         title = f"{config['github']['release_title_prefix']} {issue['title']}"
-        shell(
+        write_with_body_file(
             [
                 "gh",
                 "pr",
@@ -1024,9 +1101,10 @@ def cmd_release(args: argparse.Namespace) -> int:
                 production,
                 "--title",
                 title,
-                "--body",
-                f"Refs #{args.issue}\n\nRelease candidate from `{integration}` to `{production}`.\n\n## Release verification\n\n- [ ] Full regression\n- [ ] Migration matrix\n- [ ] Production image browser tests\n- [ ] Artifact manifest and attestations\n- [ ] Deployment approval\n",
-            ]
+            ],
+            f"Refs #{args.issue}\n\nRelease candidate from `{integration}` to `{production}`.\n\n## Release verification\n\n- [ ] Full regression\n- [ ] Migration matrix\n- [ ] Production image browser tests\n- [ ] Artifact manifest and attestations\n- [ ] Deployment approval\n",
+            label=f"the release pull request for Issue #{args.issue}",
+            prefix=f"claude-release-{args.issue}-",
         )
         created = json.loads(
             output(

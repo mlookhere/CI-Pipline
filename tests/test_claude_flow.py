@@ -10,6 +10,7 @@ Every test here fails against the code before #35.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -127,6 +128,77 @@ def test_a_clean_body_is_written_through_a_file_not_an_argument(monkeypatch):
     assert len(written) == 1
     assert written[0][:5] == ["gh", "issue", "edit", "35", "--body-file"]
     assert Path(written[0][5]).name.startswith("test-")
+
+
+def test_the_uploaded_file_is_byte_identical_to_the_body(monkeypatch):
+    """The whole point of Issue #35: what GitHub stores must be what was read.
+
+    A UTF-8 codec is not sufficient on its own. A temp file opened in text mode translates
+    every LF to CRLF on Windows, so the upload differs from the source and every later cycle
+    adds another CR to handoff truth.
+    """
+    body = f"Line one\nPreclearance {EM_DASH} required.\nTrailing\n"
+    uploaded: list[bytes] = []
+    monkeypatch.setattr(
+        claude_flow, "shell", lambda command, **_: uploaded.append(Path(command[-1]).read_bytes())
+    )
+    claude_flow.write_issue_body(35, body, prefix="test-")
+    assert uploaded == [body.encode("utf-8")]
+
+
+def test_a_replacement_character_that_was_already_there_may_be_written_back(monkeypatch):
+    """Refusing this too would make a body corrupted by the pre-#35 code unrepairable, and
+    would let one stray character in an unrelated Issue title wedge every command."""
+    written: list[list[str]] = []
+    monkeypatch.setattr(claude_flow, "shell", lambda command, **_: written.append(command))
+    corrupted = "state with � in it"
+    claude_flow.write_issue_body(35, corrupted, prefix="test-", original=corrupted)
+    assert len(written) == 1, "a write that adds no loss must go through"
+
+
+def test_a_replacement_character_this_write_introduces_is_still_refused(monkeypatch):
+    written: list[list[str]] = []
+    monkeypatch.setattr(claude_flow, "shell", lambda command, **_: written.append(command))
+    with pytest.raises(SystemExit):
+        claude_flow.write_issue_body(35, "now � lossy", prefix="test-", original="was clean")
+    assert written == []
+
+
+def _pr_outputs(view: str) -> object:
+    """Stand in for `output()` across the three gh reads open_pr_for_branch makes."""
+
+    def responder(command: list[str], **_: object) -> str:
+        if "issue" in command:
+            return view
+        return "[]" if "--limit" not in command else '[{"number": 99, "url": "http://pr/99"}]'
+
+    return responder
+
+
+def test_a_pr_body_is_written_through_a_file_not_an_argument(monkeypatch):
+    """The PR is review truth, and its body is spliced from an Issue read with
+    errors="replace" -- so it needs the same guarded writer the Issue body uses."""
+    written: list[list[str]] = []
+    monkeypatch.setattr(claude_flow, "shell", lambda command, **_: written.append(command))
+    monkeypatch.setattr(
+        claude_flow,
+        "output",
+        _pr_outputs(json.dumps({"title": "t", "body": f"## Objective\n\nShip {EM_DASH} it.", "labels": []})),
+    )
+    pr = claude_flow.open_pr_for_branch(35, "work/35-x", {"branches": {"integration": "dev"}})
+    assert pr["number"] == 99
+    assert len(written) == 1
+    assert "--body" not in written[0], "a PR body must not travel through argv"
+    assert written[0][-2] == "--body-file"
+
+
+def test_a_failed_issue_read_stops_the_pr_instead_of_raising_json_errors(monkeypatch):
+    """This runs after `git push`, so an uncaught JSONDecodeError leaves a published branch
+    with no PR and no explanation."""
+    monkeypatch.setattr(claude_flow, "shell", lambda command, **_: None)
+    monkeypatch.setattr(claude_flow, "output", _pr_outputs(""))
+    with pytest.raises(SystemExit):
+        claude_flow.open_pr_for_branch(35, "work/35-x", {"branches": {"integration": "dev"}})
 
 
 def test_replacing_a_missing_block_appends_it_without_mangling_text():
