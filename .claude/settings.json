@@ -56,7 +56,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_context.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_context.py\"",
             "timeout": 20
           }
         ]
@@ -67,7 +67,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/user_prompt_submit.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/user_prompt_submit.py\"",
             "timeout": 10
           }
         ]
@@ -79,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_policy.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_policy.py\"",
             "timeout": 12
           }
         ]
@@ -91,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/permission_request.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/permission_request.py\"",
             "timeout": 10
           }
         ]
@@ -103,7 +103,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_tool_review.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_tool_review.py\"",
             "timeout": 15
           }
         ]
@@ -115,7 +115,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_tool_review.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_tool_review.py\"",
             "timeout": 15
           }
         ]
@@ -127,7 +127,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_compact.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_compact.py\"",
             "timeout": 15
           }
         ]
@@ -139,7 +139,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_compact.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_compact.py\"",
             "timeout": 10
           }
         ]
@@ -151,7 +151,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_start.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_start.py\"",
             "timeout": 10
           }
         ]
@@ -163,7 +163,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_stop.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_stop.py\"",
             "timeout": 10
           }
         ]
@@ -174,7 +174,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_gate.py\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_gate.py\"",
             "timeout": 20
           }
         ]

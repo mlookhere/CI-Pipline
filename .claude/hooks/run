@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Launch a lifecycle hook under a Python interpreter that has been proven to run.
+#
+# Claude Code hands a hook's `command` string to a shell -- `sh -c` on macOS and Linux,
+# Git Bash on Windows -- so a shell is a given. An interpreter is not. A bare `python`
+# does not exist on Debian or Ubuntu without python-is-python3, and on Windows it is
+# routinely the Microsoft Store stub: present on PATH, executable, and exits without
+# running anything.
+#
+# That failure is silent, which is the whole problem. A hook that cannot start fails no
+# gate and no command: pre_tool_policy simply stops denying --no-verify, force pushes and
+# protected-branch pushes, stop_gate stops enforcing completion, and the session carries
+# on looking green (Issue #38). So this wrapper is loud when it cannot resolve, and
+# `check_hook_entry` in workflow/self_test.py fails the fast gate if a hook command ever
+# goes back to naming an interpreter directly.
+#
+# Resolution is probed once and memoised. scripts/lib/python.sh accepts a candidate only
+# by executing it, and these hooks run on every tool call, so paying for a probe per
+# invocation is not acceptable. The cache holds an absolute path: a rebuilt virtualenv
+# invalidates it by that path ceasing to be executable, rather than by a bare name
+# quietly resolving somewhere else.
+set -euo pipefail
+
+ROOT="${CLAUDE_PROJECT_DIR:-}"
+if [[ -z "$ROOT" ]]; then
+  echo "hook runner: CLAUDE_PROJECT_DIR is unset, so the repository cannot be located." >&2
+  echo "hook runner: repository policy hooks are NOT enforcing." >&2
+  exit 2
+fi
+
+# The shared git directory, so a worktree and its main checkout keep one cache. Resolved
+# by reading rather than by shelling out to git: this runs ahead of every tool call.
+GIT_DIR="$ROOT/.git"
+if [[ -f "$GIT_DIR" ]]; then
+  GIT_DIR="$(sed -n 's/^gitdir: //p' "$GIT_DIR")"
+  GIT_DIR="${GIT_DIR%/worktrees/*}"
+fi
+CACHE="$GIT_DIR/claude/cache/hook-interpreter"
+
+PY=""
+if [[ -r "$CACHE" ]]; then
+  read -r PY <"$CACHE" || PY=""
+fi
+
+if [[ -z "$PY" || ! -x "$PY" ]]; then
+  # shellcheck source=scripts/lib/python.sh
+  . "$ROOT/scripts/lib/python.sh"
+  if ! PY="$(resolve_python)" || ! PY="$(command -v "$PY")"; then
+    echo "hook runner: no working Python 3.10+ interpreter, so $* did not run." >&2
+    echo "hook runner: repository policy hooks are NOT enforcing." >&2
+    echo "hook runner: install Python 3.10+ or set PYTHON_BIN to one." >&2
+    exit 2
+  fi
+  if mkdir -p "${CACHE%/*}" 2>/dev/null; then
+    printf '%s\n' "$PY" >"$CACHE" 2>/dev/null || true
+    chmod 600 "$CACHE" 2>/dev/null || true
+  fi
+fi
+
+exec "$PY" "$@"

@@ -30,6 +30,12 @@ REQUIRED_HOOK_EVENTS = {
 REQUIRED_PR_SECTIONS = {"Issue", "Result", "Implementation", "Verification", "Risk", "Remaining work"}
 # `python3` as a command, not as part of resolve_python, PYTHON3_BIN, or a path fragment.
 BARE_PYTHON3 = re.compile(r"(?<![-\w])python3\b")
+# The same for a bare `python`. Wider on both sides than BARE_PYTHON3 has to be: dropping
+# the digit makes `python.sh`, `python.exe` and any `.../python` path fragment collide, so
+# a directory separator before, or a `.` or `-` after, disqualifies the match.
+BARE_PYTHON = re.compile(r"(?<![-\w./\\])python3?(?![\w.\-])")
+# Hook commands go through this wrapper rather than naming an interpreter (Issue #38).
+HOOK_RUNNER = ".claude/hooks/run"
 SUBPROCESS_READERS = {"run", "check_output", "Popen"}
 # Redirection targets that hand output nowhere a codec could apply.
 NON_CAPTURING_TARGETS = {"DEVNULL", "STDOUT"}
@@ -105,15 +111,26 @@ def check_hooks(hooks_config: Any) -> list[str]:
 def check_hook_entry(event: str, hook: dict) -> list[str]:
     failures = []
     command = str(hook.get("command", ""))
-    match = re.search(r"/\.claude/hooks/([A-Za-z0-9_.-]+)", command)
-    if match and not (ROOT / ".claude" / "hooks" / match.group(1)).is_file():
-        failures.append(f".claude/settings.json: {event} references missing {match.group(1)}")
+    # Every referenced file, not just the first: the command now names the runner and the
+    # hook module, and checking only one of them leaves the other free to go missing.
+    for name in re.findall(r"/\.claude/hooks/([A-Za-z0-9_.-]+)", command):
+        if not (ROOT / ".claude" / "hooks" / name).is_file():
+            failures.append(f".claude/settings.json: {event} references missing {name}")
     # A hook command is an entry point too, and a silently dead hook stops enforcing policy
-    # without failing anything. On Windows `python3` is the Microsoft Store stub (Issue #35).
-    if BARE_PYTHON3.search(command):
+    # without failing anything -- no gate fails, no command fails, nothing is printed, and
+    # pre_tool_policy simply stops denying what it denies. On Windows both `python3` and
+    # `python` are routinely the Microsoft Store stub, which is on PATH and exits without
+    # running anything; on Debian and Ubuntu `python` does not exist at all (Issues #35, #38).
+    if BARE_PYTHON.search(command):
         failures.append(
-            f".claude/settings.json: {event} launches a bare python3, which on Windows is a "
-            "stub that exits without running the hook"
+            f".claude/settings.json: {event} names an interpreter directly; launch the hook "
+            f"through {HOOK_RUNNER}, which probes one interpreter, memoises it, and says so "
+            "loudly when nothing resolves"
+        )
+    elif HOOK_RUNNER not in command:
+        failures.append(
+            f".claude/settings.json: {event} does not go through {HOOK_RUNNER}, so a hook that "
+            "cannot start would fail silently"
         )
     timeout = int(hook.get("timeout", 0) or 0)
     if timeout <= 0 or timeout > 60:
