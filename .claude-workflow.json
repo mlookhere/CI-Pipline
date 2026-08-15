@@ -61,6 +61,7 @@
           "PR metadata",
           "Fast deterministic gates",
           "PR test/build gates",
+          "Dependency audit",
           "Workflow policy"
         ],
         "required_approving_reviews": 0

@@ -518,3 +518,19 @@ def test_the_audit_covers_the_set_that_actually_ships():
     and it breaks the moment pyproject stops delegating."""
     assert check_pyproject(PYPROJECT) == []
     assert check_audit_target(CONFIG) == []
+
+
+def test_every_pull_request_job_is_a_required_check():
+    """A job that runs but is not required is a check that reports, not one that blocks.
+
+    Branch protection is unavailable on this repository's plan, so this list is currently
+    declarative -- it is what `scripts/setup-github` would apply. That makes it easier, not
+    harder, to add a gating job and forget it here, and the omission would only surface as
+    a merge that should have been stopped.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
+    names = re.findall(r"(?m)^    name: (.+?)\s*$", workflow)
+    required = json.loads(CONFIG)["github"]["branch_protection"]["integration"]["required_checks"]
+    assert names, "no job names found; this test is pinned to the wrong shape"
+    missing = [name for name in names if name not in required]
+    assert missing == [], f"jobs that run but do not gate: {missing}"
