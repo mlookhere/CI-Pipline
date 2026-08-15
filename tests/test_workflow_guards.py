@@ -119,11 +119,57 @@ def test_the_runner_form_is_accepted():
     assert self_test.check_hook_entry("PreToolUse", {"command": RUNNER_COMMAND, "timeout": 10}) == []
 
 
-def test_a_hook_that_bypasses_the_runner_is_rejected():
-    """No interpreter named, but nothing resolving one either -- still a silent death."""
-    hook = {"command": '"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_policy.py"', "timeout": 10}
-    failures = self_test.check_hook_entry("PreToolUse", hook)
-    assert any("does not go through" in failure for failure in failures)
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(
+            '"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_policy.py"',
+            id="nothing-resolves-an-interpreter",
+        ),
+        # A substring test for the runner passes for both of these. The runner is named,
+        # and does not run.
+        pytest.param(
+            "sh -c 'echo skipped' # .claude/hooks/run",
+            id="runner-named-only-in-a-comment",
+        ),
+        pytest.param(
+            f"{RUNNER_COMMAND} || true",
+            id="runner-called-then-chained-past",
+        ),
+        pytest.param(
+            f'{RUNNER_COMMAND} "$CLAUDE_PROJECT_DIR/.claude/hooks/stop_gate.py"',
+            id="extra-argument",
+        ),
+    ],
+)
+def test_a_hook_that_bypasses_the_runner_is_rejected(command):
+    """No interpreter named, but nothing reliably resolving one -- still a silent death."""
+    failures = self_test.check_hook_entry("PreToolUse", {"command": command, "timeout": 10})
+    assert any("not exactly a" in failure for failure in failures), failures
+
+
+def test_the_eleven_hook_timeouts_are_unchanged():
+    """Issue #38 requires the same timeouts, and a timeout is easy to lose in a rewrite."""
+    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    seen = [
+        (event, hook["timeout"])
+        for event, groups in settings["hooks"].items()
+        for group in groups
+        for hook in group["hooks"]
+    ]
+    assert seen == [
+        ("SessionStart", 20),
+        ("UserPromptSubmit", 10),
+        ("PreToolUse", 12),
+        ("PermissionRequest", 10),
+        ("PostToolUse", 15),
+        ("PostToolUseFailure", 15),
+        ("PreCompact", 15),
+        ("PostCompact", 10),
+        ("SubagentStart", 10),
+        ("SubagentStop", 10),
+        ("Stop", 20),
+    ], seen
 
 
 def test_every_referenced_hook_file_is_checked_not_just_the_first():
