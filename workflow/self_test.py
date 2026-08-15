@@ -30,6 +30,22 @@ REQUIRED_HOOK_EVENTS = {
 REQUIRED_PR_SECTIONS = {"Issue", "Result", "Implementation", "Verification", "Risk", "Remaining work"}
 # `python3` as a command, not as part of resolve_python, PYTHON3_BIN, or a path fragment.
 BARE_PYTHON3 = re.compile(r"(?<![-\w])python3\b")
+# Any bare interpreter, not just `python3`. Wider on both sides than BARE_PYTHON3 has to
+# be: dropping the digit makes `python.sh` and any `.../python` path fragment collide, so a
+# directory separator before, or a `-` after, disqualifies the match. The suffixes are
+# spelled out rather than allowed generally, because `python3.12` and `python.exe` are
+# every bit as bare as `python` while `python.sh` is a wrapper and must not be flagged.
+# `py` is the Windows launcher, which picks an interpreter this repository has not probed.
+BARE_PYTHON = re.compile(r"(?<![-\w./\\])(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|py)(?![\w.\-])")
+# Hook commands go through this wrapper rather than naming an interpreter (Issue #38).
+HOOK_RUNNER = ".claude/hooks/run"
+# The whole command, anchored at both ends. A substring test for the runner passes for
+# `sh -c 'evil' # .claude/hooks/run` and for a runner call with `|| python x` appended;
+# there is exactly one shape a hook command is allowed to take, so require it exactly.
+HOOK_COMMAND = re.compile(
+    r'^bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/run" '
+    r'"\$CLAUDE_PROJECT_DIR/\.claude/hooks/[A-Za-z0-9_.-]+\.py"$'
+)
 SUBPROCESS_READERS = {"run", "check_output", "Popen"}
 # Redirection targets that hand output nowhere a codec could apply.
 NON_CAPTURING_TARGETS = {"DEVNULL", "STDOUT"}
@@ -105,15 +121,28 @@ def check_hooks(hooks_config: Any) -> list[str]:
 def check_hook_entry(event: str, hook: dict) -> list[str]:
     failures = []
     command = str(hook.get("command", ""))
-    match = re.search(r"/\.claude/hooks/([A-Za-z0-9_.-]+)", command)
-    if match and not (ROOT / ".claude" / "hooks" / match.group(1)).is_file():
-        failures.append(f".claude/settings.json: {event} references missing {match.group(1)}")
+    # Every referenced file, not just the first: the command now names the runner and the
+    # hook module, and checking only one of them leaves the other free to go missing.
+    for name in re.findall(r"/\.claude/hooks/([A-Za-z0-9_.-]+)", command):
+        if not (ROOT / ".claude" / "hooks" / name).is_file():
+            failures.append(f".claude/settings.json: {event} references missing {name}")
     # A hook command is an entry point too, and a silently dead hook stops enforcing policy
-    # without failing anything. On Windows `python3` is the Microsoft Store stub (Issue #35).
-    if BARE_PYTHON3.search(command):
+    # without failing anything -- no gate fails, no command fails, nothing is printed, and
+    # pre_tool_policy simply stops denying what it denies. On Windows both `python3` and
+    # `python` are routinely the Microsoft Store stub, which is on PATH and exits without
+    # running anything; on Debian and Ubuntu `python` does not exist at all (Issues #35, #38).
+    if BARE_PYTHON.search(command) or BARE_PYTHON3.search(command):
         failures.append(
-            f".claude/settings.json: {event} launches a bare python3, which on Windows is a "
-            "stub that exits without running the hook"
+            f".claude/settings.json: {event} names an interpreter directly; launch the hook "
+            f"through {HOOK_RUNNER}, which probes one interpreter, memoises it, and says so "
+            "loudly when nothing resolves"
+        )
+    elif not HOOK_COMMAND.match(command):
+        failures.append(
+            f".claude/settings.json: {event} is not exactly a {HOOK_RUNNER} invocation, so a "
+            "hook that cannot start could still fail silently; the command must be "
+            f'bash "$CLAUDE_PROJECT_DIR/{HOOK_RUNNER}" followed by one quoted hook path and '
+            "nothing else"
         )
     timeout = int(hook.get("timeout", 0) or 0)
     if timeout <= 0 or timeout > 60:
