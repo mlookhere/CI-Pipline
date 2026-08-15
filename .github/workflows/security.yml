@@ -22,9 +22,10 @@ permissions: {}
 #   - dangerous workflow patterns: workflow/check_workflow_policy.py, which runs
 #     unconditionally in the workflow-policy job below and is stricter than
 #     CodeQL's Actions queries about the patterns this repository cares about.
-#   - vulnerable dependencies: pip-audit in the release stage. Note this means
-#     pull requests currently get no dependency scanning; tracked separately and
-#     blocked on the unresolved chromadb advisory.
+#   - vulnerable dependencies: pip-audit, which runs in the `Dependency audit` job on
+#     every pull request as well as in the release stage (Issue #28). It audits
+#     requirements.txt, which since Issue #16 is the file the wheel's dependency
+#     metadata is built from, so it covers the set that actually ships.
 jobs:
   dependency-review:
     name: Dependency review

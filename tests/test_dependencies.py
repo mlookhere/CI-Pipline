@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "workflow"))
 
 from check_dependencies import (  # noqa: E402
+    DELEGATION,
     check_artifacts,
     check_audit_target,
     check_no_chroma_server_client,
@@ -31,8 +32,10 @@ from check_dependencies import (  # noqa: E402
     check_requirements,
     compare,
     normalise,
+    quoted,
     sections,
 )
+from check_workflow_policy import job_blocks  # noqa: E402
 
 PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 REQUIREMENTS = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -505,19 +508,35 @@ def test_the_audit_stage_has_a_job_on_the_pull_request_workflow():
 
 
 def test_the_audit_blocks_rather_than_reports():
-    """`continue-on-error` or a `|| true` would make this advisory, which it is not."""
+    """`continue-on-error` or a `|| true` would make this advisory, which it is not.
+
+    The job body is located by parsing rather than by slicing between two literals:
+    slicing assumed `audit` precedes `pr-tests`, and reordering them would have made the
+    slice empty and this assertion vacuous.
+    """
     workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
-    audit = workflow[workflow.index("  audit:") : workflow.index("  pr-tests:")]
-    assert "continue-on-error" not in audit
+    blocks = dict(job_blocks(workflow))
+    assert "audit" in blocks, sorted(blocks)
+    assert "continue-on-error" not in blocks["audit"]
     assert all("||" not in command for command in json.loads(CONFIG)["commands"]["security"])
 
 
-def test_the_audit_covers_the_set_that_actually_ships():
-    """After #16 requirements.txt is the source the wheel is built from, so auditing it
-    audits everything that ships. That equivalence is the whole reason this is sufficient,
-    and it breaks the moment pyproject stops delegating."""
+def test_the_audited_file_is_the_file_the_wheel_is_built_from():
+    """The equivalence that makes auditing one file sufficient.
+
+    After #16 the wheel's dependency metadata is generated from requirements.txt, so
+    scanning that file scans what ships. The moment pyproject stops delegating, or the
+    audit points somewhere else, the audit stops covering the shipped set -- and it would
+    still report success. Both halves are asserted, and the delegation target is compared
+    against the audited path rather than each being checked in isolation.
+    """
     assert check_pyproject(PYPROJECT) == []
     assert check_audit_target(CONFIG) == []
+    audited = [command for command in json.loads(CONFIG)["commands"]["security"] if "pip-audit" in command]
+    assert audited, "no audit command to compare against"
+    delegated = quoted(DELEGATION.search(sections(PYPROJECT)["tool.setuptools.dynamic"]).group("files"))
+    assert delegated == ["requirements.txt"], delegated
+    assert all(delegated[0] in command for command in audited)
 
 
 def test_every_pull_request_job_is_a_required_check():
