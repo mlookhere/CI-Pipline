@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 REQUIREMENTS = ROOT / "requirements.txt"
 CONFIG = ROOT / ".claude-workflow.json"
+PACKAGE = ROOT / "knowledge_nexus"
 
 # A table heading, tolerating indentation and a trailing comment. Anchoring on `$` alone
 # would leave `[project]  # comment` unrecognised and silently fold its body into whichever
@@ -43,6 +44,12 @@ DYNAMIC_DEPENDENCIES = re.compile(r"(?m)^[ \t]*dynamic[ \t]*=[ \t]*\[(?P<items>[
 # sub-table form is read separately, from its own section.
 DELEGATION = re.compile(r"(?m)^[ \t]*dependencies[ \t]*=[ \t]*\{[^}]*file[^[]*\[(?P<files>[^\]]*)\]")
 DELEGATION_TABLE = re.compile(r"(?m)^[ \t]*file[ \t]*=[ \t]*\[(?P<files>[^\]]*)\]")
+# A direct `HttpClient(` / `AsyncHttpClient(` call. This is a backstop, not a proof: an
+# alias, a `getattr`, or a name bound and then called all evade it. The property that
+# actually holds is enforced at run time, by `_require_local_api` refusing any client that
+# did not resolve to the embedded implementation.
+QUOTES = ('"""', "'''", '"', "'")
+CHROMA_SERVER_CLIENT = re.compile(r"\b(?:Async)?HttpClient\s*\(")
 # A requirement as setuptools will read it: a name, optional extras, then either a version
 # specifier or a PEP 508 direct reference, then an optional marker. Inline comments are
 # stripped before matching -- setuptools strips them too, verified against a real build.
@@ -224,13 +231,93 @@ def check_artifacts(directory: Path, expected: list[str]) -> list[str]:
     return failures
 
 
+def normalise(entry: str) -> tuple[str, tuple[str, ...]]:
+    """A requirement reduced to what it means, not how it was written.
+
+    setuptools reorders a multi-clause specifier -- `chromadb>=0.5,<1.0` comes back as
+    `chromadb<1.0,>=0.5` -- so comparing the raw strings reports a mismatch between a
+    requirement and itself. That went unnoticed while every requirement had one clause.
+    """
+    text = "".join(entry.split())
+    marker = ""
+    if ";" in text:
+        text, marker = text.split(";", 1)
+    for index, char in enumerate(text):
+        if char in "<>=!~@":
+            name, clauses = text[:index], text[index:]
+            break
+    else:
+        name, clauses = text, ""
+    # PEP 503 canonicalisation: a dot and an underscore are the same separator, so
+    # `zope.interface` and `zope-interface` are one package and must compare equal.
+    canonical = re.sub(r"[-_.]+", "-", name).lower()
+    parts = tuple(sorted(part for part in clauses.split(",") if part))
+    # setuptools emits double-quoted marker strings where the source file may use single
+    # quotes; the marker means the same thing either way.
+    return canonical, parts + ((";" + marker.replace("'", '"'),) if marker else ())
+
+
 def compare(artifact: str, found: list[str], expected: list[str]) -> list[str]:
-    if found == expected:
+    if sorted(map(normalise, found)) == sorted(map(normalise, expected)):
         return []
     return [
         f"{artifact}: runtime dependencies do not match requirements.txt; "
         f"the artifact declares {found or 'nothing'} and requirements.txt declares {expected}"
     ]
+
+
+def code_only(line: str) -> str:
+    """The line with comments and string bodies removed.
+
+    Writing `HttpClient(` inside a docstring in order to *forbid* it should not break the
+    fast gate, and neither should a trailing comment that mentions it. Only code counts.
+    """
+    kept: list[str] = []
+    quote = ""
+    index = 0
+    while index < len(line):
+        if quote:
+            if line.startswith(quote, index):
+                index += len(quote)
+                quote = ""
+            else:
+                index += 1
+            continue
+        opened = next((mark for mark in QUOTES if line.startswith(mark, index)), "")
+        if opened:
+            quote = opened
+            index += len(opened)
+            continue
+        if line[index] == "#":
+            break
+        kept.append(line[index])
+        index += 1
+    return "".join(kept)
+
+
+def check_no_chroma_server_client() -> list[str]:
+    """The advisory this repository is pinned around is a *server* vulnerability.
+
+    PYSEC-2026-311 is a pre-authentication code injection reachable through Chroma's HTTP
+    surface. `chromadb>=0.5,<1.0` keeps this install off every affected version, but that
+    pin is only half the argument: the other half is that the embedded client never opens
+    that surface at all. `HttpClient` or `AsyncHttpClient` would, and would do it quietly,
+    because nothing else in the build would change.
+
+    So the pin and this check hold the position together. Adopting a Chroma server means
+    reassessing the advisory first, deliberately, rather than discovering it later.
+    """
+    failures: list[str] = []
+    for path in sorted(PACKAGE.rglob("*.py")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for number, line in enumerate(text.splitlines(), start=1):
+            if CHROMA_SERVER_CLIENT.search(code_only(line)):
+                failures.append(
+                    f"{path.relative_to(ROOT).as_posix()}:{number}: uses a Chroma HTTP client, "
+                    "which exposes the surface PYSEC-2026-311 targets; the pin to chromadb<1.0 "
+                    "assumes embedded use, so reassess that advisory before adopting a server"
+                )
+    return failures
 
 
 def main() -> int:
@@ -246,6 +333,7 @@ def main() -> int:
     failures = check_pyproject(PYPROJECT.read_text(encoding="utf-8"))
     failures += check_requirements(requirements)
     failures += check_audit_target(CONFIG.read_text(encoding="utf-8"))
+    failures += check_no_chroma_server_client()
     if args.artifacts:
         failures += check_artifacts(args.artifacts, declared(requirements))
     for failure in failures:
