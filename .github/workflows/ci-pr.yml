@@ -64,6 +64,36 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  audit:
+    # A separate job rather than a step inside the gates above. pip-audit resolves the
+    # full transitive set into an isolated environment, which takes about as long as the
+    # rest of the PR gate put together, so running it alongside keeps the wall clock flat.
+    # It also gives a dependency finding its own named check, instead of a test-and-build
+    # failure that has to be opened to understand.
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ci/requirements-ci.txt
+      - run: ./scripts/bootstrap --ci
+      - run: ./ci/run audit
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: audit-ci-${{ github.run_id }}
+          path: artifacts/ci/
+          if-no-files-found: warn
+          retention-days: 14
+
   pr-tests:
     name: PR test/build gates
     runs-on: ubuntu-latest
