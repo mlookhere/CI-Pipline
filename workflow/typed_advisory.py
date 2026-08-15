@@ -99,11 +99,11 @@ def main() -> int:
         return broken(f"{CONFIG.name} is missing, so there is no configuration to check with")
     if not interpreter:
         return broken("no project interpreter was given, so no third-party types would be seen")
-    if Path(interpreter).resolve() == Path(sys.executable).resolve():
-        return broken(
-            "the project interpreter is the toolchain interpreter, which carries no runtime "
-            "dependencies; ci/run.py falls back to it when the project virtualenv is missing"
-        )
+    # Deliberately not "is this a different interpreter from mine". That was tried and it
+    # is wrong twice over: on Linux a virtualenv's `python` is a symlink to the same base
+    # interpreter, so `Path.resolve()` makes two distinct environments compare equal and
+    # the check fired on every CI run; and identity was only ever a proxy for the thing
+    # that matters, which is whether the runtime types are actually visible. Ask that.
     if not sees_runtime_types(interpreter):
         return broken(
             f"{interpreter} cannot import {WITNESS}, so mypy would check against no "
