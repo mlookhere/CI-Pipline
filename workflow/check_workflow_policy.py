@@ -34,9 +34,17 @@ JOB_HEADING = re.compile(r"(?m)^  ([A-Za-z0-9_-]+):\s*$")
 CONCURRENCY_KEY = re.compile(r"(?im)^([ \t]*)concurrency\s*:(.*)$")
 # Four spaces exactly: job-level keys, so a step's own `if:` cannot pose as the job's.
 JOB_IF_KEY = re.compile(r"(?m)^    if\s*:(.*)$")
-JOB_NEEDS_KEY = re.compile(r"(?m)^    needs\s*:")
-NEEDS_OUTCOME = re.compile(r"needs\.[A-Za-z0-9_-]+\.(?:result|outputs)\b")
-STATUS_FUNCTION = re.compile(r"\b(?:always|cancelled|failure|success)\s*\(\s*\)")
+# A two-space job name carrying a value on the same line, i.e. a flow mapping. Valid
+# YAML that this line-oriented reader cannot see into, so it is rejected rather than
+# silently skipped -- an unreadable job is how a rule stops applying without failing.
+INLINE_JOB = re.compile(r"(?m)^  ([A-Za-z0-9_-]+):[ \t]*(?!#)\S")
+ALWAYS = re.compile(r"\balways\s*\(\s*\)")
+NOT_CANCELLED = re.compile(r"!\s*cancelled\s*\(\s*\)")
+CLAUDE_ACTION = "anthropics/claude-code-action@"
+DENY_EDIT_TOOLS = '--disallowedTools "Edit,Write,NotebookEdit"'
+FORK_GUARD = "head.repo.full_name == github.repository"
+SANITIZER = "sanitize_claude_input.py"
+WRITE_PERMISSION = re.compile(r"(?im)^\s*(?:contents|pull-requests|issues|actions|checks)\s*:\s*write\s*$")
 # Line-anchored so a `${{ ... }}` group value keeps its closing braces.
 GROUP_SETTING = re.compile(r"(?im)^\s*group\s*:\s*(.+?)\s*$")
 CANCEL_SETTING = re.compile(r"(?im)^\s*cancel-in-progress\s*:\s*(.+?)\s*$")
@@ -164,8 +172,26 @@ def check_closure_concurrency_text(text: str, rel: str) -> list[str]:
     return failures
 
 
+def strip_comment(line: str) -> str:
+    """Drop a trailing `#` comment, leaving quoted `#` alone.
+
+    A comment is not part of the condition GitHub evaluates, so a status function
+    written in one must not satisfy a rule about the condition.
+    """
+    quote = ""
+    for index, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1] in " \t"):
+            return line[:index]
+    return line
+
+
 def job_if(body: str) -> str | None:
-    """The job-level `if:` value, folded onto one line.
+    """The job-level `if:` value, folded onto one line with comments removed.
 
     Continuation lines are gathered until a key returns to job-level indentation, so a
     `>-` or `|` block reads the same as an inline condition.
@@ -173,45 +199,101 @@ def job_if(body: str) -> str | None:
     match = JOB_IF_KEY.search(body)
     if match is None:
         return None
-    parts = [match.group(1).strip()]
+    parts = [strip_comment(match.group(1)).strip()]
     for line in body[match.end() :].splitlines():
         if line.strip() and len(line) - len(line.lstrip()) <= 4:
             break
-        parts.append(line.strip())
+        parts.append(strip_comment(line).strip())
     return " ".join(part for part in parts if part)
 
 
-def check_status_gate_text(text: str, rel: str) -> list[str]:
-    """A job that inspects a dependency's outcome must say so with a status function.
+def check_claude_job_text(text: str, rel: str) -> list[str]:
+    """The advisory review must stay unprivileged, sanitised, and closed to forks.
 
-    `needs:` makes GitHub skip a job whenever any dependency is skipped or failed, and
-    it does that by propagation -- the `if:` is never evaluated. So a condition like
-    `needs.review.result == 'success'` is dead in precisely the cases it was written
-    for, and worse, the same propagation reports the job as *cancelled* rather than
-    skipped when the run is cancelled, which is how Issue #31 presented: an advisory
-    review that was never asked for looked like one that had broken.
-
-    A status function in the condition (`always()`, `cancelled()`, `failure()`,
-    `success()`) takes the decision back from propagation, at which point the
-    `needs.*.result` clauses mean what they say. Only jobs that read `needs.*.result`
-    or `needs.*.outputs` are constrained: a plain `needs: build` with an unrelated
-    branch condition is correct exactly as written.
+    Extracted from `check` so each property is reachable from a test rather than only
+    from a CI run against the one real file.
     """
+    if CLAUDE_ACTION not in text:
+        return []
     failures: list[str] = []
-    for name, body in job_blocks(text):
-        if not JOB_NEEDS_KEY.search(body):
-            continue
-        condition = job_if(body)
-        if condition is None or not NEEDS_OUTCOME.search(condition):
-            continue
-        if STATUS_FUNCTION.search(condition):
-            continue
+    claude_block = job_containing(text, CLAUDE_ACTION)
+    if WRITE_PERMISSION.search(claude_block):
+        failures.append(f"{rel}: Claude-key job appears to have repository write permission")
+    if DENY_EDIT_TOOLS not in claude_block:
+        failures.append(f"{rel}: advisory Claude job must explicitly deny edit tools")
+    if SANITIZER not in text:
+        failures.append(f"{rel}: Claude prompt input must be constructed by a bounded sanitizer")
+    if FORK_GUARD not in text:
+        failures.append(f"{rel}: Claude review must reject forked pull requests")
+    return failures
+
+
+def check_claude_publisher_gate_text(text: str, rel: str) -> list[str]:
+    """Nothing privileged may run off the back of the Claude job unless it succeeded.
+
+    The advisory review is unprivileged by construction: no write permission, edit tools
+    denied, forks rejected, prompt input sanitised. The job that *publishes* its output
+    is the privileged one -- it carries `pull-requests: write` and comments on the pull
+    request -- and the only thing standing between the two is the publisher's condition.
+
+    Two properties, both load-bearing, neither implying the other:
+
+    * It must name the Claude job's success. Drop that conjunct and the publisher runs
+      on forked pull requests and on runs whose review produced nothing, because the
+      fork guard and the label check live on the Claude job, not on this one.
+    * It must exclude a cancelled run with `!cancelled()`. A status check function is
+      what removes GitHub's implicit `success()` wrapper and puts the condition back in
+      charge, which is what stops a superseded run reporting this job as cancelled
+      (Issue #31). `always()` is the wrong function here and is rejected outright:
+      GitHub documents `!cancelled()` as the alternative to it precisely because
+      `always()` keeps running when the run has been cancelled -- on a write-scoped job
+      that means commenting on behalf of a run that was already abandoned.
+
+    Structure this reader cannot follow is a failure, not a pass. A flow-mapping job or
+    a job name at the wrong indentation would otherwise take the publisher out of scope
+    silently, which is the same class of bug as the one being fixed.
+    """
+    if CLAUDE_ACTION not in text:
+        return []
+    failures: list[str] = []
+    offset = jobs_offset(text)
+    for match in INLINE_JOB.finditer(text[offset:]):
         failures.append(
-            f"{rel}: job {name!r} gates on a dependency's outcome without a status function, "
-            "so `needs:` propagation decides it first -- the condition is never evaluated when "
-            "a dependency skips, and the job reports cancelled rather than skipped when the run "
-            "is cancelled; add !cancelled() (in ${{ }} form) to the condition"
+            f"{rel}:{line_of(text, offset + match.start())}: job {match.group(1)!r} is written as "
+            "a flow mapping, which this policy reader cannot inspect; declare it as a block "
+            "mapping so its permissions and condition stay checkable"
         )
+    blocks = job_blocks(text)
+    keyed = [name for name, body in blocks if CLAUDE_ACTION in body]
+    if not keyed:
+        failures.append(
+            f"{rel}: this workflow runs the Claude action but no job block containing it could be "
+            "located; job names are expected at two-space indentation under `jobs:`"
+        )
+        return failures
+    required = [re.compile(rf"needs\.{re.escape(name)}\.result\s*==\s*['\"]success['\"]") for name in keyed]
+    for name, body in blocks:
+        if CLAUDE_ACTION in body or not WRITE_PERMISSION.search(body):
+            continue
+        condition = job_if(body) or ""
+        if not any(pattern.search(condition) for pattern in required):
+            failures.append(
+                f"{rel}: job {name!r} has repository write permission in a workflow that runs the "
+                f"Claude action, but its condition does not require {keyed[0]!r} to have "
+                "succeeded; a privileged publisher must gate on the advisory job's success "
+                "explicitly, because that is what keeps it off forked pull requests"
+            )
+        if ALWAYS.search(condition):
+            failures.append(
+                f"{rel}: job {name!r} has repository write permission and uses always(), which "
+                "keeps running after the run is cancelled; use !cancelled() instead"
+            )
+        elif not NOT_CANCELLED.search(condition):
+            failures.append(
+                f"{rel}: job {name!r} has repository write permission but its condition carries no "
+                "status check function, so GitHub's implicit success() wrapper decides it and a "
+                "superseded run reports it cancelled rather than skipped; add !cancelled()"
+            )
     return failures
 
 
@@ -234,27 +316,10 @@ def check(path: Path) -> list[str]:
                 f"{path.relative_to(ROOT)}: pull_request_target workflow must not have contents: write"
             )
 
-    if "anthropics/claude-code-action@" in text:
-        claude_block = job_containing(text, "anthropics/claude-code-action@")
-        if re.search(
-            r"(?im)^\s*(?:contents|pull-requests|issues|actions|checks)\s*:\s*write\s*$",
-            claude_block,
-        ):
-            failures.append(
-                f"{path.relative_to(ROOT)}: Claude-key job appears to have repository write permission"
-            )
-        if '--disallowedTools "Edit,Write,NotebookEdit"' not in claude_block:
-            failures.append(f"{path.relative_to(ROOT)}: advisory Claude job must explicitly deny edit tools")
-        if "sanitize_claude_input.py" not in text:
-            failures.append(
-                f"{path.relative_to(ROOT)}: Claude prompt input must be constructed by a bounded sanitizer"
-            )
-        if "head.repo.full_name == github.repository" not in text:
-            failures.append(f"{path.relative_to(ROOT)}: Claude review must reject forked pull requests")
-
     rel = str(path.relative_to(ROOT))
+    failures.extend(check_claude_job_text(text, rel))
     failures.extend(check_closure_concurrency_text(text, rel))
-    failures.extend(check_status_gate_text(text, rel))
+    failures.extend(check_claude_publisher_gate_text(text, rel))
     return failures
 
 

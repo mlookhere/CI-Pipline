@@ -11,14 +11,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "workflow"))
 
 from check_workflow_policy import (  # noqa: E402
+    check_claude_job_text,
+    check_claude_publisher_gate_text,
     check_closure_concurrency_text,
     check_dependabot,
     check_dependabot_text,
-    check_status_gate_text,
     concurrency_block,
     group_of,
     integration_branch,
@@ -245,127 +248,228 @@ def test_the_real_sync_control_workflow_satisfies_the_rule():
     assert check_closure_concurrency_text(text, "sync-control.yml") == []
 
 
-# The shape that shipped: `needs:` propagation decides `publish` before the condition is
-# ever read, so a run cancelled by the workflow's own concurrency group reports the
-# advisory publish step as cancelled rather than skipped (Issue #31).
-PROPAGATION_GATE = """name: Optional Claude advisory review
+# The publisher is the privileged half of the advisory review: `pull-requests: write`
+# and a comment on the pull request, reachable only through the Claude job's success.
+# Two independent properties have to hold, and a rule phrased as "inspect your
+# dependency properly" pins neither -- a condition that stops inspecting the dependency
+# leaves the write-scoped job wide open while looking tidier than the one it replaced.
+PUBLISHER = """name: Optional Claude advisory review
 
 on:
   pull_request:
     types: [labeled, synchronize]
 
+permissions: {}
+
 jobs:
   review:
-    if: contains(github.event.pull_request.labels.*.name, 'claude:review')
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'claude:review')
+      && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       review_json: ${{ steps.claude.outputs.structured_output }}
     steps:
       - id: claude
-        run: echo review
+        uses: anthropics/claude-code-action@v1
   publish:
     needs: review
-    if: needs.review.result == 'success' && needs.review.outputs.review_json != ''
+    if: ${{ !cancelled() && needs.review.result == 'success' && needs.review.outputs.review_json != '' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - run: echo publish
 """
 
-STATUS_GATE = PROPAGATION_GATE.replace(
-    "    if: needs.review.result == 'success' && needs.review.outputs.review_json != ''",
+PUBLISHER_CONDITION = (
     "    if: ${{ !cancelled() && needs.review.result == 'success' "
-    "&& needs.review.outputs.review_json != '' }}",
+    "&& needs.review.outputs.review_json != '' }}\n"
 )
 
 
-def test_gating_on_a_dependency_outcome_without_a_status_function_is_rejected():
-    failures = check_status_gate_text(PROPAGATION_GATE, "claude-review.yml")
-    assert len(failures) == 1
-    assert "'publish'" in failures[0]
-    assert "reports cancelled rather than skipped" in failures[0]
+def _publisher(condition: str) -> str:
+    text = PUBLISHER.replace(PUBLISHER_CONDITION, condition)
+    assert text != PUBLISHER, "fixture replacement did not apply"
+    return text
 
 
-def test_adding_the_status_function_passes():
-    assert check_status_gate_text(STATUS_GATE, "claude-review.yml") == []
-
-
-def test_any_status_function_satisfies_the_rule():
-    """`always()`/`success()`/`failure()` override propagation just as `cancelled()` does."""
-    for call in ("always()", "success()", "failure()", "!cancelled()"):
-        text = STATUS_GATE.replace("!cancelled()", call)
-        assert check_status_gate_text(text, "claude-review.yml") == [], call
-
-
-def test_a_dependency_that_is_not_inspected_is_not_constrained():
-    """`needs: build` plus a branch condition is correct exactly as written."""
-    text = PROPAGATION_GATE.replace(
-        "    if: needs.review.result == 'success' && needs.review.outputs.review_json != ''",
-        "    if: github.ref == 'refs/heads/main'",
-    )
-    assert check_status_gate_text(text, "claude-review.yml") == []
-
-
-def test_a_job_with_no_condition_at_all_is_not_constrained():
-    text = PROPAGATION_GATE.replace(
-        "    if: needs.review.result == 'success' && needs.review.outputs.review_json != ''\n",
-        "",
-    )
-    assert check_status_gate_text(text, "claude-review.yml") == []
-
-
-def test_a_step_condition_is_not_mistaken_for_the_jobs():
-    """A step's `if:` sits deeper; reading it as the job's would wave the defect through."""
-    text = PROPAGATION_GATE.replace(
-        "    if: needs.review.result == 'success' && needs.review.outputs.review_json != ''\n"
-        "    runs-on: ubuntu-latest\n"
-        "    steps:\n"
-        "      - run: echo publish\n",
-        "    runs-on: ubuntu-latest\n"
-        "    steps:\n"
-        "      - if: ${{ !cancelled() && needs.review.result == 'success' }}\n"
-        "        run: echo publish\n",
-    )
-    assert job_if(dict(job_blocks(text))["publish"]) is None
-    assert check_status_gate_text(text, "claude-review.yml") == []
+def test_the_publisher_must_gate_on_the_claude_jobs_success():
+    assert check_claude_publisher_gate_text(PUBLISHER, "claude-review.yml") == []
 
 
 def test_a_folded_condition_is_read_whole():
-    """Splitting the condition over lines must not hide the status function on line two."""
-    text = PROPAGATION_GATE.replace(
-        "    if: needs.review.result == 'success' && needs.review.outputs.review_json != ''",
-        "    if: >-\n"
-        "      ${{ !cancelled()\n"
-        "      && needs.review.result == 'success'\n"
-        "      && needs.review.outputs.review_json != '' }}",
+    """Splitting a condition over lines must not hide half of it from the reader."""
+    condition = "    if: >-\n      ${{ !cancelled()\n      && needs.review.result == 'success' }}\n"
+    body = dict(job_blocks(_publisher(condition)))["publish"]
+    assert job_if(body) == ">- ${{ !cancelled() && needs.review.result == 'success' }}"
+
+
+def test_a_steps_own_condition_is_not_read_as_the_jobs():
+    """A step's `if:` sits deeper; reading it as the job's would wave the defect through."""
+    text = _publisher("").replace(
+        "      - run: echo publish",
+        "      - if: ${{ !cancelled() && needs.review.result == 'success' }}\n        run: echo publish",
     )
-    assert "cancelled()" in job_if(dict(job_blocks(text))["publish"])
-    assert check_status_gate_text(text, "claude-review.yml") == []
+    assert job_if(dict(job_blocks(text))["publish"]) is None
 
 
-def test_a_folded_condition_without_a_status_function_is_still_rejected():
-    text = PROPAGATION_GATE.replace(
-        "    if: needs.review.result == 'success' && needs.review.outputs.review_json != ''",
-        "    if: >-\n      needs.review.result == 'success'\n      && needs.review.outputs.review_json != ''",
+@pytest.mark.parametrize(
+    "condition",
+    [
+        pytest.param("    if: ${{ always() }}\n", id="always-alone"),
+        pytest.param("    if: ${{ success() || failure() }}\n", id="success-or-failure"),
+        pytest.param(
+            "    if: ${{ always() && needs.review.outputs.review_json != '' }}\n",
+            id="output-without-success",
+        ),
+        pytest.param("", id="no-condition-at-all"),
+    ],
+)
+def test_a_write_scoped_publisher_that_stops_requiring_success_is_rejected(condition):
+    failures = check_claude_publisher_gate_text(_publisher(condition), "claude-review.yml")
+    assert any("gate on the advisory job's success" in failure for failure in failures)
+    assert all("'publish'" in failure for failure in failures)
+
+
+def test_always_is_rejected_on_a_write_scoped_publisher():
+    """GitHub documents !cancelled() as the alternative *because* always() outlives a
+    cancellation; on a job that comments as the repository that is worse than #31."""
+    condition = "    if: ${{ always() && needs.review.result == 'success' }}\n"
+    failures = check_claude_publisher_gate_text(_publisher(condition), "claude-review.yml")
+    assert len(failures) == 1
+    assert "keeps running after the run is cancelled" in failures[0]
+
+
+def test_dropping_the_status_function_reintroduces_the_cancelled_report():
+    """The regression this Issue exists for: the exact condition that shipped."""
+    condition = "    if: needs.review.result == 'success' && needs.review.outputs.review_json != ''\n"
+    failures = check_claude_publisher_gate_text(_publisher(condition), "claude-review.yml")
+    assert len(failures) == 1
+    assert "reports it cancelled rather than skipped" in failures[0]
+
+
+def test_a_status_function_in_a_comment_does_not_count():
+    """The condition GitHub evaluates does not include the comment beside it."""
+    condition = "    if: needs.review.result == 'success'  # relies on !cancelled() elsewhere\n"
+    failures = check_claude_publisher_gate_text(_publisher(condition), "claude-review.yml")
+    assert len(failures) == 1
+    assert "add !cancelled()" in failures[0]
+
+
+def test_a_publisher_with_no_write_permission_is_not_constrained():
+    """The rule is about privilege, not about every job downstream of the review."""
+    text = PUBLISHER.replace("      pull-requests: write", "      pull-requests: read").replace(
+        PUBLISHER_CONDITION, "    if: ${{ always() }}\n"
     )
-    assert len(check_status_gate_text(text, "claude-review.yml")) == 1
+    assert check_claude_publisher_gate_text(text, "claude-review.yml") == []
 
 
-def test_a_block_form_needs_list_is_recognised():
-    text = PROPAGATION_GATE.replace("    needs: review\n", "    needs:\n      - review\n")
-    assert len(check_status_gate_text(text, "claude-review.yml")) == 1
+def test_a_double_quoted_success_comparison_is_accepted():
+    text = PUBLISHER.replace("needs.review.result == 'success'", 'needs.review.result == "success"')
+    assert check_claude_publisher_gate_text(text, "claude-review.yml") == []
 
 
-def test_the_real_claude_review_workflow_satisfies_the_rule():
-    """Regression guard against the defect returning to the file it was found in."""
+def test_naming_a_different_job_does_not_satisfy_the_gate():
+    """Gating on some other job's success leaves the Claude job's outcome unchecked."""
+    text = PUBLISHER.replace("needs.review.result == 'success'", "needs.build.result == 'success'")
+    assert len(check_claude_publisher_gate_text(text, "claude-review.yml")) == 1
+
+
+def test_a_workflow_without_the_claude_action_is_not_constrained():
+    text = PUBLISHER.replace("        uses: anthropics/claude-code-action@v1", "        run: echo hi")
+    assert check_claude_publisher_gate_text(text, "ci-pr.yml") == []
+
+
+def test_a_flow_mapping_job_fails_closed():
+    """Valid YAML this line reader cannot see into must fail, not silently pass.
+
+    Written as a flow mapping, `publish` is absorbed into the job above it, so the
+    write permission and the condition both leave the reader's view.
+    """
+    text = PUBLISHER.replace(
+        "  publish:\n"
+        "    needs: review\n"
+        f"{PUBLISHER_CONDITION}"
+        "    runs-on: ubuntu-latest\n"
+        "    permissions:\n"
+        "      contents: read\n"
+        "      pull-requests: write\n"
+        "    steps:\n"
+        "      - run: echo publish\n",
+        '  publish: {needs: review, if: "${{ always() }}", runs-on: ubuntu-latest, '
+        "permissions: {pull-requests: write}, steps: [{run: echo publish}]}\n",
+    )
+    assert text != PUBLISHER, "fixture replacement did not apply"
+    failures = check_claude_publisher_gate_text(text, "claude-review.yml")
+    assert any("flow mapping" in failure for failure in failures)
+
+
+def test_job_names_at_the_wrong_indentation_fail_closed():
+    """Re-indenting the jobs hides every job from the reader; that is a failure."""
+    text = "\n".join(
+        f"  {line}" if line.startswith(("  review:", "  publish:")) else line
+        for line in PUBLISHER.splitlines()
+    )
+    failures = check_claude_publisher_gate_text(text, "claude-review.yml")
+    assert any("no job block containing it could be located" in failure for failure in failures)
+
+
+def test_the_real_claude_review_publisher_is_gated():
     text = (WORKFLOWS / "claude-review.yml").read_text(encoding="utf-8")
-    assert "needs: review" in text, "test is pinned to the wrong file"
-    assert check_status_gate_text(text, "claude-review.yml") == []
+    assert "pull-requests: write" in text, "test is pinned to the wrong file"
+    assert check_claude_publisher_gate_text(text, "claude-review.yml") == []
 
 
-def test_every_workflow_in_the_repository_satisfies_the_rule():
+def test_every_workflow_in_the_repository_satisfies_the_publisher_rule():
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
         text = path.read_text(encoding="utf-8")
-        assert check_status_gate_text(text, path.name) == [], path.name
+        assert check_claude_publisher_gate_text(text, path.name) == [], path.name
+
+
+# Acceptance criterion 3 of Issue #31: the security posture of this workflow must not
+# move. Those four properties were asserted only against the one real file by a CI run;
+# extracting them made each reachable from a test that can actually try to break it.
+@pytest.mark.parametrize(
+    ("mutation", "replacement", "expected"),
+    [
+        pytest.param(
+            "      pull-requests: read",
+            "      pull-requests: write",
+            "repository write permission",
+            id="claude-key-job-granted-write",
+        ),
+        pytest.param(
+            '--disallowedTools "Edit,Write,NotebookEdit"',
+            "--allowedTools Read",
+            "deny edit tools",
+            id="edit-tools-no-longer-denied",
+        ),
+        pytest.param(
+            "sanitize_claude_input.py",
+            "cat_the_diff.py",
+            "bounded sanitizer",
+            id="prompt-input-not-sanitized",
+        ),
+        pytest.param(
+            "head.repo.full_name == github.repository",
+            "true",
+            "reject forked pull requests",
+            id="forks-no-longer-rejected",
+        ),
+    ],
+)
+def test_the_claude_job_security_properties_are_each_enforced(mutation, replacement, expected):
+    text = (WORKFLOWS / "claude-review.yml").read_text(encoding="utf-8")
+    assert check_claude_job_text(text, "claude-review.yml") == [], "the real file must be clean"
+    broken = text.replace(mutation, replacement)
+    assert broken != text, "mutation did not apply; the test is pinned to stale text"
+    failures = check_claude_job_text(broken, "claude-review.yml")
+    assert any(expected in failure for failure in failures), failures
 
 
 def test_the_real_sync_job_still_runs_after_the_closure_job():

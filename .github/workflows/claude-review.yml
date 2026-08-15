@@ -42,16 +42,24 @@ jobs:
             --disallowedTools "Edit,Write,NotebookEdit"
             --json-schema '{"type":"object","properties":{"summary":{"type":"string","maxLength":1200},"findings":{"type":"array","maxItems":20,"items":{"type":"object","properties":{"severity":{"enum":["critical","high","medium","low"]},"title":{"type":"string","maxLength":180},"path":{"type":"string","maxLength":500},"line":{"type":["integer","null"],"minimum":1},"evidence":{"type":"string","maxLength":1200},"recommendation":{"type":"string","maxLength":1200}},"required":["severity","title","path","line","evidence","recommendation"],"additionalProperties":false}},"needs_human_review":{"type":"boolean"}},"required":["summary","findings","needs_human_review"],"additionalProperties":false}'
   publish:
-    # `needs:` alone skips this job whenever `review` is skipped -- but only by
-    # propagation, which never evaluates the condition below. The moment the run is
-    # cancelled (this workflow's own cancel-in-progress group fires on every push to
-    # the pull request) that same propagation reports `publish` as *cancelled*, which
-    # reads as a broken advisory review rather than one that was never asked for.
+    # GitHub applies a default `success()` check to a condition unless it already
+    # contains a status check function, so without one this job is decided by `needs:`
+    # propagation and the clauses below are never read. A review that simply skips --
+    # no label, no key -- reports `skipped` either way; the case that misreports is a
+    # run cancelled by this workflow's own cancel-in-progress group, which fires on
+    # every push to the pull request. Propagation reports the superseded `publish` as
+    # *cancelled*, which reads as an advisory review that broke rather than one that
+    # was superseded (Issue #31).
     #
-    # A status function in the condition takes the decision back from propagation:
-    # `!cancelled()` makes a superseded run report `skipped`, and the two clauses after
-    # it -- now genuinely evaluated rather than dead -- keep the job to the one case it
-    # is for. The `${{ }}` form is required: a bare leading `!` is a YAML tag indicator.
+    # `!cancelled()` is the function to use here, and is the alternative GitHub
+    # documents to `always()`: `always()` keeps running after the run is cancelled,
+    # which on a job holding `pull-requests: write` would mean commenting on behalf of
+    # a run that was already abandoned. The `${{ }}` form is required -- a bare leading
+    # `!` is a YAML tag indicator, not a negation.
+    #
+    # The success clause stays load-bearing and is enforced by
+    # `check_claude_publisher_gate_text`: the fork guard and the label check live on
+    # `review`, so this job reaches them only through `review`'s success.
     needs: review
     if: ${{ !cancelled() && needs.review.result == 'success' && needs.review.outputs.review_json != '' }}
     runs-on: ubuntu-latest
