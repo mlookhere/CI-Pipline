@@ -28,9 +28,51 @@ UNTRUSTED_HEAD = re.compile(
     r"(?i)(?:github\.event\.pull_request\.head(?:\.sha|\.ref|\.repo)?|github\.head_ref|gh\s+pr\s+checkout)"
 )
 
+CLOSURE_HANDLER = "handle_pr_state.py"
+CANCELLING = re.compile(r"(?im)^\s*cancel-in-progress\s*:\s*true\s*$")
+# Only a column-zero `concurrency:` is workflow level; an indented one belongs to a job.
+WORKFLOW_CONCURRENCY = re.compile(r"(?m)^concurrency\s*:\s*$\n((?:[ \t]+\S.*\n|[ \t]*\n)*)")
+
 
 def line_of(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
+
+
+def job_block(text: str, offset: int) -> str:
+    """The `jobs:` entry containing `offset`, sliced at two-space headings."""
+    starts = list(re.finditer(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text))
+    start = max((match.start() for match in starts if match.start() < offset), default=0)
+    end = min((match.start() for match in starts if match.start() > offset), default=len(text))
+    return text[start:end]
+
+
+def check_closure_concurrency_text(text: str, rel: str) -> list[str]:
+    """The one-shot pull-request-closure handler must not sit in a cancelling group.
+
+    `handle_pr_state.py` moves a merged pull request's controlling Issue to
+    release-ready. It answers a `closed` event that will never be re-delivered, so a
+    cancellation loses the transition permanently -- and a cancelled run is
+    indistinguishable from the benign cancellations a burst of pushes produces, so it
+    fails invisibly. The idempotent sync alongside it recomputes state from scratch and
+    may keep `cancel-in-progress`; this handler may not (Issue #36).
+    """
+    if CLOSURE_HANDLER not in text:
+        return []
+    failures: list[str] = []
+    workflow_level = WORKFLOW_CONCURRENCY.search(text)
+    if workflow_level and CANCELLING.search(workflow_level.group(1)):
+        failures.append(
+            f"{rel}:{line_of(text, workflow_level.start())}: a workflow-level cancel-in-progress group "
+            f"covers every trigger, so any of them can cancel the one-shot {CLOSURE_HANDLER} run; "
+            "give each job the group its own idempotence justifies"
+        )
+    offset = text.index(CLOSURE_HANDLER)
+    if CANCELLING.search(job_block(text, offset)):
+        failures.append(
+            f"{rel}:{line_of(text, offset)}: the job running {CLOSURE_HANDLER} sets "
+            "cancel-in-progress: true; a one-shot closure handler must not be cancellable"
+        )
+    return failures
 
 
 def check(path: Path) -> list[str]:
@@ -53,19 +95,15 @@ def check(path: Path) -> list[str]:
             )
 
     if "anthropics/claude-code-action@" in text:
-        action_offset = text.index("anthropics/claude-code-action@")
-        job_starts = list(re.finditer(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text))
-        start = max((m.start() for m in job_starts if m.start() < action_offset), default=0)
-        end = min((m.start() for m in job_starts if m.start() > action_offset), default=len(text))
-        job_block = text[start:end]
+        claude_block = job_block(text, text.index("anthropics/claude-code-action@"))
         if re.search(
             r"(?im)^\s*(?:contents|pull-requests|issues|actions|checks)\s*:\s*write\s*$",
-            job_block,
+            claude_block,
         ):
             failures.append(
                 f"{path.relative_to(ROOT)}: Claude-key job appears to have repository write permission"
             )
-        if '--disallowedTools "Edit,Write,NotebookEdit"' not in job_block:
+        if '--disallowedTools "Edit,Write,NotebookEdit"' not in claude_block:
             failures.append(f"{path.relative_to(ROOT)}: advisory Claude job must explicitly deny edit tools")
         if "sanitize_claude_input.py" not in text:
             failures.append(
@@ -74,6 +112,7 @@ def check(path: Path) -> list[str]:
         if "head.repo.full_name == github.repository" not in text:
             failures.append(f"{path.relative_to(ROOT)}: Claude review must reject forked pull requests")
 
+    failures.extend(check_closure_concurrency_text(text, str(path.relative_to(ROOT))))
     return failures
 
 
