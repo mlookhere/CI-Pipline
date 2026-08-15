@@ -26,8 +26,11 @@ sys.path.insert(0, str(ROOT / "workflow"))
 from check_dependencies import (  # noqa: E402
     check_artifacts,
     check_audit_target,
+    check_no_chroma_server_client,
     check_pyproject,
     check_requirements,
+    compare,
+    normalise,
     sections,
 )
 
@@ -316,3 +319,112 @@ def test_the_wheel_metadata_is_built_from_the_requirements_file():
         "python-docx",
         "python-multipart",
     }
+
+
+# ------------------------------------------------------- the chromadb pin (Issue #25)
+
+
+def test_chromadb_is_held_below_the_affected_range():
+    """PYSEC-2026-311 is introduced at 1.0.0 with no fixed release.
+
+    OSV lists 44 affected versions and every one is 1.x, so a `<1.0` constraint is a clean
+    audit rather than a suppression. Pinned as a test because a later widening would
+    otherwise show up only as a red release gate, weeks after the change that caused it.
+    """
+    entries = [
+        line.split("#")[0].strip()
+        for line in REQUIREMENTS.splitlines()
+        if line.split("#")[0].strip().startswith("chromadb")
+    ]
+    assert entries == ["chromadb>=0.5,<1.0"], entries
+
+
+def test_posthog_is_held_where_chroma_can_call_it():
+    """Chroma 0.6.x calls `posthog.capture(distinct_id, event, properties)`.
+
+    posthog 6.0 changed that to `capture(event, **kwargs)`, and Chroma declares only
+    `posthog>=2.4.0`, so a fresh install resolves 7.x and every client start, collection
+    create and query logs an ERROR. Pinning chromadb below 1.0 is what makes its companion
+    this repository's problem.
+    """
+    entries = [
+        line.split("#")[0].strip()
+        for line in REQUIREMENTS.splitlines()
+        if line.split("#")[0].strip().startswith("posthog")
+    ]
+    assert entries == ["posthog>=2.4,<6"], entries
+
+
+def test_the_repository_uses_no_chroma_http_client():
+    assert check_no_chroma_server_client() == []
+
+
+def test_the_http_client_guard_actually_fires(tmp_path, monkeypatch):
+    """A guard that cannot fire is worse than none: it reports safety it never checked.
+
+    This one shipped with a literal backspace where its `\b` should have been, matched
+    nothing, and passed.
+    """
+    import check_dependencies
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "store.py").write_text(
+        "import chromadb\nclient = chromadb.HttpClient(host='chroma.internal')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(check_dependencies, "PACKAGE", package)
+    monkeypatch.setattr(check_dependencies, "ROOT", tmp_path)
+    failures = check_no_chroma_server_client()
+    assert len(failures) == 1
+    assert "PYSEC-2026-311" in failures[0]
+
+
+def test_the_guard_ignores_the_embedded_client(tmp_path, monkeypatch):
+    import check_dependencies
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "store.py").write_text(
+        "import chromadb\nclient = chromadb.PersistentClient(path='data')\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(check_dependencies, "PACKAGE", package)
+    monkeypatch.setattr(check_dependencies, "ROOT", tmp_path)
+    assert check_no_chroma_server_client() == []
+
+
+def test_chroma_telemetry_is_switched_off():
+    """Chroma posts usage telemetry to a third party by default.
+
+    From a process holding client documents that is an unannounced outbound connection,
+    and it contradicts the standalone story the embedded backend exists to provide.
+    """
+    source = (ROOT / "knowledge_nexus" / "retrieval" / "chroma_store.py").read_text(encoding="utf-8")
+    assert "anonymized_telemetry=False" in source
+
+
+def test_a_reordered_specifier_is_the_same_requirement():
+    """setuptools rewrites `chromadb>=0.5,<1.0` as `chromadb<1.0,>=0.5`.
+
+    Comparing raw strings reported a requirement as disagreeing with itself, and the
+    defect was invisible while every requirement had a single clause.
+    """
+    assert compare("demo.whl", ["chromadb<1.0,>=0.5"], ["chromadb>=0.5,<1.0"]) == []
+
+
+def test_a_genuinely_different_bound_is_still_caught():
+    assert compare("demo.whl", ["chromadb<2.0,>=0.5"], ["chromadb>=0.5,<1.0"]) != []
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        pytest.param("uvicorn[standard]>=0.29", "uvicorn[standard]>=0.29", id="extras"),
+        pytest.param("Python_Docx>=1.1", "python-docx>=1.1", id="name-normalisation"),
+        pytest.param(
+            "tomli>=2.0; python_version<'3.11'", "tomli>=2.0;python_version<'3.11'", id="marker-spacing"
+        ),
+    ],
+)
+def test_equivalent_spellings_compare_equal(left, right):
+    assert normalise(left) == normalise(right)
