@@ -40,6 +40,8 @@ from check_workflow_policy import job_blocks  # noqa: E402
 PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 REQUIREMENTS = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 CONFIG = (ROOT / ".claude-workflow.json").read_text(encoding="utf-8")
+# A job carrying this marker reports rather than gates, so it is not a required check.
+ADVISORY_MARKER = "# gating: no"
 
 DELEGATING = """[project]
 name = "demo"
@@ -548,8 +550,48 @@ def test_every_pull_request_job_is_a_required_check():
     a merge that should have been stopped.
     """
     workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
-    names = re.findall(r"(?m)^    name: (.+?)\s*$", workflow)
     required = json.loads(CONFIG)["github"]["branch_protection"]["integration"]["required_checks"]
-    assert names, "no job names found; this test is pinned to the wrong shape"
-    missing = [name for name in names if name not in required]
+    gating = {}
+    for job, body in job_blocks(workflow):
+        named = re.search(r"(?m)^    name: (.+?)\s*$", body)
+        # An advisory job reports and never fails, so requiring it would be meaningless.
+        # Recognised by an explicit marker, not by its name or by what its comments
+        # happen to mention: matching on 'advisory' anywhere would silently drop a
+        # gating job called 'Security advisory scan' from this check.
+        advisory = ADVISORY_MARKER in body
+        if named and not advisory:
+            gating[job] = named.group(1)
+    assert gating, "no gating job names found; this test is pinned to the wrong shape"
+    missing = [name for name in gating.values() if name not in required]
     assert missing == [], f"jobs that run but do not gate: {missing}"
+
+
+def test_the_fast_gate_stays_hermetic():
+    """The advisory check exists so this setting never has to be relaxed (Issue #24).
+
+    "Fixing" the typed findings by dropping `no_site_packages` would stop the fast gate
+    being reproducible, and one numpy release could collapse the whole typecheck.
+    """
+    assert "no_site_packages = true" in PYPROJECT
+    advisory = (ROOT / "ci" / "mypy-advisory.ini").read_text(encoding="utf-8")
+    # The setting, not the word: the advisory config explains the trade-off in a comment,
+    # and an assertion that cannot tell those apart is one that fails for the wrong reason.
+    settings = [line for line in advisory.splitlines() if not line.lstrip().startswith("#")]
+    assert not any("no_site_packages" in line for line in settings), (
+        "the advisory config must see third-party types"
+    )
+
+
+def test_no_gating_stage_uses_the_advisory_config():
+    """The advisory config must never become the one a blocking stage runs."""
+    config = json.loads(CONFIG)
+    using = {
+        stage
+        for stage, groups in config["stages"].items()
+        for group in groups
+        if any(
+            "mypy-advisory" in command or "typed_advisory" in command
+            for command in config["commands"].get(group) or []
+        )
+    }
+    assert using == {"typed-advisory"}, using

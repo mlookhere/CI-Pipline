@@ -64,6 +64,43 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  typed-advisory:
+    # Reports, never blocks. The fast gate type-checks with `no_site_packages = true` so
+    # it stays reproducible, which means every finding that depends on a third party's
+    # signatures is invisible there. This job pays that back by checking with those types
+    # available -- and it must not gate, because a new chromadb or pydantic release could
+    # add findings without a line of this repository changing, and a gate that goes red
+    # for that teaches people to ignore it (Issue #24).
+    #
+    # Non-blocking by construction, not by `continue-on-error` and not by `|| true`:
+    # `workflow/typed_advisory.py` prints the findings, writes them to the artifact,
+    # raises them as annotations, and exits 0 deliberately. A shell fallback would make
+    # `ci/run.py` record a clean run it never had, losing the count and the findings.
+    # gating: no -- reports findings, never fails; see workflow/typed_advisory.py
+    name: Typed findings (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ci/requirements-ci.txt
+      - run: ./scripts/bootstrap --ci
+      - run: ./ci/run typed-advisory
+      - name: Upload typed findings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: typed-advisory-${{ github.run_id }}
+          path: artifacts/ci/
+          if-no-files-found: warn
+          retention-days: 14
+
   audit:
     # A separate job rather than a step inside the gates above. pip-audit resolves the
     # full transitive set into an isolated environment, which takes about as long as the
