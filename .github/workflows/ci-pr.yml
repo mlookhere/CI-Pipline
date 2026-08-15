@@ -76,6 +76,7 @@ jobs:
     # `workflow/typed_advisory.py` prints the findings, writes them to the artifact,
     # raises them as annotations, and exits 0 deliberately. A shell fallback would make
     # `ci/run.py` record a clean run it never had, losing the count and the findings.
+    # gating: no -- reports findings, never fails; see workflow/typed_advisory.py
     name: Typed findings (advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 20

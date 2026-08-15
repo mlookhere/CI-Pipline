@@ -7,17 +7,18 @@ numpy >= 2.3 ships PEP 695 stubs that are a fatal parse error under `python_vers
 that our code is then checked against no third-party types at all -- so any finding that
 depends on chromadb's, fastapi's or pydantic's signatures is invisible every day.
 
-This runs the same code with those types available and prints what it finds. It is
-advisory **by construction** rather than by configuration: it exits 0 whatever mypy says.
+This runs the same code with those types available and prints what it finds.
 
-That is deliberate, and it is not `|| true`. A shell fallback would make `ci/run.py` record
-a clean run it never had, losing the count and the findings together. Here the findings are
-printed, written to the stage artifact, and surfaced as GitHub annotations; only the exit
-code is suppressed, and this docstring is why.
+**Findings do not fail this check. A broken check does.** Exiting non-zero on findings
+would be wrong: a third-party release can add or remove them without a line of this
+repository changing, and a gate that reddens for that teaches people to ignore it. But
+every way this script can report nothing -- the wrong interpreter, a missing config, a
+crashed mypy, a parser that matches nothing -- is a defect *here*, and reporting silence
+as safety is the failure this file exists to prevent. It has already happened twice:
+running under the toolchain venv, which has no runtime packages, and a parser defeated by
+ANSI colour. So the checker's own health is checked, and only that fails the job.
 
-Blocking on these would be wrong: a new release of a third-party package can add or remove
-findings without a line of this repository changing, and a gate that goes red for that
-teaches people to ignore it -- which is exactly the decay Issue #24 exists to prevent.
+Not `|| true` either, which would make `ci/run.py` record a clean run it never had.
 """
 
 from __future__ import annotations
@@ -31,8 +32,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "ci" / "mypy-advisory.ini"
 REPORT = ROOT / "artifacts" / "ci" / "typed-advisory-findings.json"
-# `path:line: error: message  [code]`
-FINDING = re.compile(r"^(?P<path>[^:]+):(?P<line>\d+): error: (?P<message>.*?)(?:\s+\[(?P<code>[\w-]+)\])?$")
+# `path:line: error: message  [code]`. The path is matched non-greedily rather than as
+# "anything but a colon": a Windows absolute path carries a drive colon, and `[^:]+` could
+# not cross it, so every finding was dropped silently whenever mypy reported absolute
+# paths. Relative paths from `cwd=ROOT` hid that.
+FINDING = re.compile(r"^(?P<path>.+?):(?P<line>\d+): error: (?P<message>.*?)(?:\s+\[(?P<code>[\w-]+)\])?$")
+# A package that is present only when the interpreter carries the runtime dependencies.
+# Its absence means this check would report on stub-free code and call that success.
+WITNESS = "chromadb"
 
 
 def parse(output: str) -> list[dict[str, str]]:
@@ -51,11 +58,58 @@ def parse(output: str) -> list[dict[str, str]]:
     return findings
 
 
+def sees_runtime_types(interpreter: str) -> bool:
+    """Whether this interpreter actually carries the dependencies being checked against.
+
+    `ci/run.py` falls back to its own interpreter when the project virtualenv is missing,
+    so a half-finished bootstrap would run mypy against the toolchain venv -- no
+    third-party types, no findings, green forever, which is precisely the regression this
+    check is supposed to make impossible.
+    """
+    try:
+        completed = subprocess.run(
+            [interpreter, "-c", f"import {WITNESS}"],
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def write(findings: list[dict[str, str]], note: str) -> None:
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
+    REPORT.write_text(
+        json.dumps({"count": len(findings), "note": note, "findings": findings}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def broken(reason: str) -> int:
+    """The checker itself failed. Say so loudly and fail, so it cannot rot green."""
+    write([], reason)
+    print(f"::error::typed advisory is not working: {reason}")
+    print(f"typed advisory: NOT RUN -- {reason}")
+    return 1
+
+
 def main() -> int:
+    interpreter = sys.argv[1] if len(sys.argv) > 1 else ""
     if not CONFIG.is_file():
-        print(f"typed advisory: {CONFIG} is missing; nothing to report")
-        return 0
-    interpreter = sys.argv[1] if len(sys.argv) > 1 else sys.executable
+        return broken(f"{CONFIG.name} is missing, so there is no configuration to check with")
+    if not interpreter:
+        return broken("no project interpreter was given, so no third-party types would be seen")
+    if Path(interpreter).resolve() == Path(sys.executable).resolve():
+        return broken(
+            "the project interpreter is the toolchain interpreter, which carries no runtime "
+            "dependencies; ci/run.py falls back to it when the project virtualenv is missing"
+        )
+    if not sees_runtime_types(interpreter):
+        return broken(
+            f"{interpreter} cannot import {WITNESS}, so mypy would check against no "
+            "third-party types and report success regardless"
+        )
+
     completed = subprocess.run(
         [
             sys.executable,
@@ -66,8 +120,7 @@ def main() -> int:
             "--python-executable",
             interpreter,
             # Colour codes sit between the line start and the path, so the parser matched
-            # nothing and this reported zero findings against a non-zero exit. The
-            # self-check below caught that; the flag stops it recurring.
+            # nothing and this reported zero findings against a non-zero exit.
             "--no-color-output",
         ],
         cwd=ROOT,
@@ -78,22 +131,20 @@ def main() -> int:
     )
     output = completed.stdout + completed.stderr
     findings = parse(output)
-
     print(output.rstrip())
+
+    if completed.returncode != 0 and not findings:
+        # mypy failed and produced nothing this parser recognised: a crash, a bad config,
+        # or an output format that has moved. Either way the report would be a lie.
+        return broken("mypy exited non-zero without any finding this parser recognised")
+
     for finding in findings:
-        # A GitHub annotation, so a reader sees these on the pull request rather than
-        # only inside a log nobody opens.
+        # A GitHub annotation, so a reader sees these on the pull request rather than only
+        # inside a log nobody opens.
         print(f"::notice file={finding['path']},line={finding['line']}::{finding['message']}")
 
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(json.dumps({"count": len(findings), "findings": findings}, indent=2), encoding="utf-8")
-
+    write(findings, "advisory only; findings do not fail this check")
     print(f"\ntyped advisory: {len(findings)} finding(s) reported, none blocking. See {REPORT.name}.")
-    if completed.returncode != 0 and not findings:
-        # mypy failed without producing findings -- a crash or a bad config. That is worth
-        # saying out loud, because a reporter that silently reports nothing is the failure
-        # mode this file exists to avoid.
-        print("typed advisory: mypy exited non-zero without findings; the check itself is broken")
     return 0
 
 
