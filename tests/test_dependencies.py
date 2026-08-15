@@ -486,3 +486,35 @@ def test_the_audit_no_longer_falls_back_past_strict():
     commands = json.loads(CONFIG)["commands"]["security"]
     assert commands == ["pip-audit -r requirements.txt --strict"], commands
     assert not any("||" in command for command in commands)
+
+
+# ------------------------------------------------ the audit on the PR gate (Issue #28)
+
+
+def test_a_dependency_audit_runs_on_every_pull_request():
+    """Before this, findings surfaced only at release -- weeks after the change."""
+    config = json.loads(CONFIG)
+    assert "security" in config["stages"]["audit"]
+
+
+def test_the_audit_stage_has_a_job_on_the_pull_request_workflow():
+    """A stage nothing invokes is a stage that never runs."""
+    workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
+    assert "./ci/run audit" in workflow
+    assert "pull_request" in workflow
+
+
+def test_the_audit_blocks_rather_than_reports():
+    """`continue-on-error` or a `|| true` would make this advisory, which it is not."""
+    workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
+    audit = workflow[workflow.index("  audit:") : workflow.index("  pr-tests:")]
+    assert "continue-on-error" not in audit
+    assert all("||" not in command for command in json.loads(CONFIG)["commands"]["security"])
+
+
+def test_the_audit_covers_the_set_that_actually_ships():
+    """After #16 requirements.txt is the source the wheel is built from, so auditing it
+    audits everything that ships. That equivalence is the whole reason this is sufficient,
+    and it breaks the moment pyproject stops delegating."""
+    assert check_pyproject(PYPROJECT) == []
+    assert check_audit_target(CONFIG) == []

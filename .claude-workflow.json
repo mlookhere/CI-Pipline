@@ -221,6 +221,9 @@
     "release-artifact": [
       "package_release",
       "sbom"
+    ],
+    "audit": [
+      "security"
     ]
   },
   "quality": {
