@@ -108,7 +108,7 @@
       "\"$CI_PYTHON\" workflow/check_dependencies.py --artifacts artifacts/dist"
     ],
     "security": [
-      "pip-audit -r requirements.txt --strict || pip-audit -r requirements.txt"
+      "pip-audit -r requirements.txt --strict"
     ],
     "migration": [],
     "e2e": [],

@@ -428,3 +428,61 @@ def test_a_genuinely_different_bound_is_still_caught():
 )
 def test_equivalent_spellings_compare_equal(left, right):
     assert normalise(left) == normalise(right)
+
+
+def test_the_guard_also_catches_the_async_client(tmp_path, monkeypatch):
+    import check_dependencies
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "store.py").write_text(
+        "import chromadb\nc = chromadb.AsyncHttpClient(host='chroma.internal')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(check_dependencies, "PACKAGE", package)
+    monkeypatch.setattr(check_dependencies, "ROOT", tmp_path)
+    assert len(check_no_chroma_server_client()) == 1
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param('"""Never construct HttpClient(host) here."""\n', id="docstring"),
+        pytest.param("x = 1  # not an HttpClient(...) call\n", id="trailing-comment"),
+        pytest.param("name = 'HttpClient('\n", id="string-literal"),
+    ],
+)
+def test_the_guard_does_not_fire_on_prose(tmp_path, monkeypatch, source):
+    """Documenting the prohibition must not break the gate that enforces it."""
+    import check_dependencies
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "store.py").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(check_dependencies, "PACKAGE", package)
+    monkeypatch.setattr(check_dependencies, "ROOT", tmp_path)
+    assert check_no_chroma_server_client() == []
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        pytest.param("zope.interface>=5", "zope-interface>=5", id="pep503-dot"),
+        pytest.param("Zope_Interface>=5", "zope-interface>=5", id="pep503-mixed"),
+        pytest.param(
+            "tomli>=2.0; python_version<'3.11'",
+            'tomli>=2.0; python_version<"3.11"',
+            id="marker-quote-style",
+        ),
+    ],
+)
+def test_equivalent_names_and_markers_compare_equal(left, right):
+    """setuptools rewrites both; comparing the spellings reported a false mismatch."""
+    assert normalise(left) == normalise(right)
+
+
+def test_the_audit_no_longer_falls_back_past_strict():
+    """`pip-audit --strict || pip-audit` re-runs without --strict and masks the failure."""
+    commands = json.loads(CONFIG)["commands"]["security"]
+    assert commands == ["pip-audit -r requirements.txt --strict"], commands
+    assert not any("||" in command for command in commands)

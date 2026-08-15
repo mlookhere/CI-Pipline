@@ -44,11 +44,15 @@ DYNAMIC_DEPENDENCIES = re.compile(r"(?m)^[ \t]*dynamic[ \t]*=[ \t]*\[(?P<items>[
 # sub-table form is read separately, from its own section.
 DELEGATION = re.compile(r"(?m)^[ \t]*dependencies[ \t]*=[ \t]*\{[^}]*file[^[]*\[(?P<files>[^\]]*)\]")
 DELEGATION_TABLE = re.compile(r"(?m)^[ \t]*file[ \t]*=[ \t]*\[(?P<files>[^\]]*)\]")
+# A direct `HttpClient(` / `AsyncHttpClient(` call. This is a backstop, not a proof: an
+# alias, a `getattr`, or a name bound and then called all evade it. The property that
+# actually holds is enforced at run time, by `_require_local_api` refusing any client that
+# did not resolve to the embedded implementation.
+QUOTES = ('"""', "'''", '"', "'")
+CHROMA_SERVER_CLIENT = re.compile(r"\b(?:Async)?HttpClient\s*\(")
 # A requirement as setuptools will read it: a name, optional extras, then either a version
 # specifier or a PEP 508 direct reference, then an optional marker. Inline comments are
 # stripped before matching -- setuptools strips them too, verified against a real build.
-# `HttpClient` / `AsyncHttpClient`, however chromadb is imported or aliased.
-CHROMA_SERVER_CLIENT = re.compile(r"\b(?:Async)?HttpClient\s*\(")
 REQUIREMENT = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*"
     r"(?:\[[^\]]+\])?"
@@ -244,9 +248,13 @@ def normalise(entry: str) -> tuple[str, tuple[str, ...]]:
             break
     else:
         name, clauses = text, ""
-    canonical = name.lower().replace("_", "-")
+    # PEP 503 canonicalisation: a dot and an underscore are the same separator, so
+    # `zope.interface` and `zope-interface` are one package and must compare equal.
+    canonical = re.sub(r"[-_.]+", "-", name).lower()
     parts = tuple(sorted(part for part in clauses.split(",") if part))
-    return canonical, parts + ((f";{marker}",) if marker else ())
+    # setuptools emits double-quoted marker strings where the source file may use single
+    # quotes; the marker means the same thing either way.
+    return canonical, parts + ((";" + marker.replace("'", '"'),) if marker else ())
 
 
 def compare(artifact: str, found: list[str], expected: list[str]) -> list[str]:
@@ -256,6 +264,35 @@ def compare(artifact: str, found: list[str], expected: list[str]) -> list[str]:
         f"{artifact}: runtime dependencies do not match requirements.txt; "
         f"the artifact declares {found or 'nothing'} and requirements.txt declares {expected}"
     ]
+
+
+def code_only(line: str) -> str:
+    """The line with comments and string bodies removed.
+
+    Writing `HttpClient(` inside a docstring in order to *forbid* it should not break the
+    fast gate, and neither should a trailing comment that mentions it. Only code counts.
+    """
+    kept: list[str] = []
+    quote = ""
+    index = 0
+    while index < len(line):
+        if quote:
+            if line.startswith(quote, index):
+                index += len(quote)
+                quote = ""
+            else:
+                index += 1
+            continue
+        opened = next((mark for mark in QUOTES if line.startswith(mark, index)), "")
+        if opened:
+            quote = opened
+            index += len(opened)
+            continue
+        if line[index] == "#":
+            break
+        kept.append(line[index])
+        index += 1
+    return "".join(kept)
 
 
 def check_no_chroma_server_client() -> list[str]:
@@ -272,11 +309,9 @@ def check_no_chroma_server_client() -> list[str]:
     """
     failures: list[str] = []
     for path in sorted(PACKAGE.rglob("*.py")):
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8", errors="replace")
         for number, line in enumerate(text.splitlines(), start=1):
-            if line.lstrip().startswith("#"):
-                continue
-            if CHROMA_SERVER_CLIENT.search(line):
+            if CHROMA_SERVER_CLIENT.search(code_only(line)):
                 failures.append(
                     f"{path.relative_to(ROOT).as_posix()}:{number}: uses a Chroma HTTP client, "
                     "which exposes the surface PYSEC-2026-311 targets; the pin to chromadb<1.0 "
