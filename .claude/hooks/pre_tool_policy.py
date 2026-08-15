@@ -109,17 +109,66 @@ def command_violation(root: Path, command: str) -> str | None:
     return None
 
 
-def missing_risk_labels(root: Path, cfg: dict, tool: str, command: str, issue_no: int | None) -> str | None:
-    paths = patch_paths(command) if tool in WRITE_TOOLS else []
+def repo_relative(root: Path, value: str) -> str | None:
+    """`value` as the repo-relative POSIX path the risk globs are written against.
+
+    A write tool reports the file it is about to touch as an absolute path -- on Windows,
+    with backslashes -- while `risk_paths` in .claude-workflow.json is written the way CI
+    matches `git diff` names: relative to the checkout, forward slashes. Normalising here
+    means the same globs stay the single source of truth for both. A path outside the
+    checkout (a scratchpad, a plan file) is not a repository path and cannot be a risk
+    path, so it is dropped rather than matched.
+    """
+    try:
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        return candidate.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def edited_paths(root: Path, tool: str, tool_input: dict) -> list[str]:
+    """Every repository path a write tool is about to change.
+
+    The Edit and Write tools name their target in `file_path`, NotebookEdit in
+    `notebook_path`; a patch-style command names its files in `*** Update File:` headers.
+    Before Issue #52 only the header form was read, so an ordinary Edit of a risk path
+    reached `required_risks` with an empty list and the check returned None without ever
+    consulting the Issue -- fail-open on exactly the path a session uses most.
+    """
+    if tool not in WRITE_TOOLS:
+        return []
+    paths = patch_paths(str(tool_input.get("command") or ""))
+    for key in ("file_path", "notebook_path"):
+        value = tool_input.get(key)
+        if value:
+            relative = repo_relative(root, str(value))
+            if relative:
+                paths.append(relative)
+    return paths
+
+
+def missing_risk_labels(
+    root: Path, cfg: dict, tool: str, tool_input: dict, issue_no: int | None
+) -> str | None:
+    command = str(tool_input.get("command") or "")
+    paths = edited_paths(root, tool, tool_input)
     if tool == "Bash":
         paths += re.findall(RISK_PATH_HINTS, command, re.I)
     risks = required_risks(cfg, paths)
     if not risks or not issue_no:
         return None
+    # Fail closed: an Issue that cannot be read has no labels, so every required label is
+    # missing and the edit is refused until the Issue is readable again.
     missing = sorted(risks - label_names(gh_issue(root, issue_no)))
     if not missing:
         return None
-    return "Risk-sensitive paths require Issue label(s) before editing: " + ", ".join(missing)
+    return (
+        "Risk-sensitive paths require Issue label(s) before editing: "
+        + ", ".join(missing)
+        + f". Add them to Issue #{issue_no}; the Issue is re-read after about 45 seconds."
+    )
 
 
 def capture_replacement(root: Path, cfg: dict, tool: str, command: str) -> str | None:
@@ -148,7 +197,7 @@ def main() -> int:
     checks = [
         ("foreign-lease", lease_conflict(root, cfg, tool, command, issue_no, session_id)),
         ("command-policy", command_violation(root, command) if tool == "Bash" else None),
-        ("missing-risk-label", missing_risk_labels(root, cfg, tool, command, issue_no)),
+        ("missing-risk-label", missing_risk_labels(root, cfg, tool, tool_input, issue_no)),
     ]
     for category, reason in checks:
         if reason:
