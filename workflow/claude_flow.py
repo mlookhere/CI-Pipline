@@ -129,6 +129,7 @@ COMMAND_GROUPS = (
     "e2e",
     "image_build",
     "generated_check",
+    "dependency_sync",
     "coverage",
     "clean_install",
     "vulnerability",
@@ -220,6 +221,10 @@ def detect_python(commands: Commands) -> None:
         commands["typecheck"].append(prefix + "mypy .")
     if (ROOT / "tests").exists():
         commands["unit"].append(prefix + "pytest -q")
+    if (ROOT / "pyproject.toml").exists() and (ROOT / "requirements.txt").exists():
+        # Two files that can each declare dependencies is the shape Issue #16 removed.
+        # Regenerating this config must not quietly drop the check that keeps it removed.
+        commands["dependency_sync"].append('"$CI_PYTHON" workflow/check_dependencies.py')
 
 
 def detect_rust(commands: Commands) -> None:

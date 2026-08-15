@@ -104,7 +104,8 @@
     ],
     "integration": [],
     "build": [
-      "\"$CI_PYTHON\" -m build --wheel --outdir artifacts/dist"
+      "\"$CI_PYTHON\" -m build --sdist --wheel --outdir artifacts/dist",
+      "\"$CI_PYTHON\" workflow/check_dependencies.py --artifacts artifacts/dist"
     ],
     "security": [
       "pip-audit -r requirements.txt --strict || pip-audit -r requirements.txt"
@@ -147,11 +148,15 @@
     "package_release": [],
     "workflow_self_test": [
       "\"$CI_PYTHON\" workflow/self_test.py --ci"
+    ],
+    "dependency_sync": [
+      "\"$CI_PYTHON\" workflow/check_dependencies.py"
     ]
   },
   "stages": {
     "fast": [
       "workflow_self_test",
+      "dependency_sync",
       "quality",
       "format_check",
       "lint",
