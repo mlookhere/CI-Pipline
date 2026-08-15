@@ -104,7 +104,8 @@
     ],
     "integration": [],
     "build": [
-      "\"$CI_PYTHON\" -m build --wheel --outdir artifacts/dist"
+      "\"$CI_PYTHON\" -m build --sdist --wheel --outdir artifacts/dist",
+      "\"$CI_PYTHON\" workflow/check_dependencies.py --artifacts artifacts/dist"
     ],
     "security": [
       "pip-audit -r requirements.txt --strict || pip-audit -r requirements.txt"
