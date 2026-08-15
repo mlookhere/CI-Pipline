@@ -152,6 +152,9 @@
     ],
     "dependency_sync": [
       "\"$CI_PYTHON\" workflow/check_dependencies.py"
+    ],
+    "typed_advisory": [
+      "\"$CI_PYTHON\" workflow/typed_advisory.py \"$PROJECT_PYTHON\""
     ]
   },
   "stages": {
@@ -225,6 +228,9 @@
     ],
     "audit": [
       "security"
+    ],
+    "typed-advisory": [
+      "typed_advisory"
     ]
   },
   "quality": {

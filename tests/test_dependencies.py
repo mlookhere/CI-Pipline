@@ -548,8 +548,16 @@ def test_every_pull_request_job_is_a_required_check():
     a merge that should have been stopped.
     """
     workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
-    names = re.findall(r"(?m)^    name: (.+?)\s*$", workflow)
     required = json.loads(CONFIG)["github"]["branch_protection"]["integration"]["required_checks"]
-    assert names, "no job names found; this test is pinned to the wrong shape"
-    missing = [name for name in names if name not in required]
+    gating = {}
+    for job, body in job_blocks(workflow):
+        named = re.search(r"(?m)^    name: (.+?)\s*$", body)
+        # An advisory job reports and never fails, so requiring it would be meaningless.
+        # It is recognised by its own declaration rather than by a list kept here, which
+        # would be one more thing to forget.
+        advisory = "typed_advisory" in body or "advisory" in (named.group(1).lower() if named else "")
+        if named and not advisory:
+            gating[job] = named.group(1)
+    assert gating, "no gating job names found; this test is pinned to the wrong shape"
+    missing = [name for name in gating.values() if name not in required]
     assert missing == [], f"jobs that run but do not gate: {missing}"

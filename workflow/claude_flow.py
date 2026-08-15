@@ -130,6 +130,7 @@ COMMAND_GROUPS = (
     "image_build",
     "generated_check",
     "dependency_sync",
+    "typed_advisory",
     "coverage",
     "clean_install",
     "vulnerability",
