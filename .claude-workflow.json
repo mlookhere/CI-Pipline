@@ -147,11 +147,15 @@
     "package_release": [],
     "workflow_self_test": [
       "\"$CI_PYTHON\" workflow/self_test.py --ci"
+    ],
+    "dependency_sync": [
+      "\"$CI_PYTHON\" workflow/check_dependencies.py"
     ]
   },
   "stages": {
     "fast": [
       "workflow_self_test",
+      "dependency_sync",
       "quality",
       "format_check",
       "lint",
