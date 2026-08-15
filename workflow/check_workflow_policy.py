@@ -28,9 +28,135 @@ UNTRUSTED_HEAD = re.compile(
     r"(?i)(?:github\.event\.pull_request\.head(?:\.sha|\.ref|\.repo)?|github\.head_ref|gh\s+pr\s+checkout)"
 )
 
+CLOSURE_HANDLER = "handle_pr_state.py"
+JOBS_KEY = re.compile(r"(?m)^jobs\s*:\s*$")
+JOB_HEADING = re.compile(r"(?m)^  ([A-Za-z0-9_-]+):\s*$")
+CONCURRENCY_KEY = re.compile(r"(?im)^([ \t]*)concurrency\s*:(.*)$")
+# Line-anchored so a `${{ ... }}` group value keeps its closing braces.
+GROUP_SETTING = re.compile(r"(?im)^\s*group\s*:\s*(.+?)\s*$")
+CANCEL_SETTING = re.compile(r"(?im)^\s*cancel-in-progress\s*:\s*(.+?)\s*$")
+
 
 def line_of(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
+
+
+def unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1].strip()
+    return value
+
+
+def jobs_offset(text: str) -> int:
+    match = JOBS_KEY.search(text)
+    return match.start() if match else len(text)
+
+
+def job_blocks(text: str) -> list[tuple[str, str]]:
+    """`(name, body)` per job. Sliced inside `jobs:` so `on:` sub-keys cannot pose as jobs."""
+    section = text[jobs_offset(text) :]
+    heads = list(JOB_HEADING.finditer(section))
+    blocks = []
+    for index, head in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(section)
+        blocks.append((head.group(1), section[head.start() : end]))
+    return blocks
+
+
+def job_containing(text: str, needle: str) -> str:
+    """The job body holding `needle`, or the whole file when it sits outside any job."""
+    for _, body in job_blocks(text):
+        if needle in body:
+            return body
+    return text
+
+
+def concurrency_block(text: str) -> str:
+    """The `concurrency:` mapping, normalised so block and inline forms read alike."""
+    match = CONCURRENCY_KEY.search(text)
+    if not match:
+        return ""
+    inline = match.group(2).strip()
+    if inline:
+        return "\n".join(part.strip() for part in inline.strip("{} ").split(","))
+    indent = len(match.group(1))
+    lines: list[str] = []
+    for line in text[match.end() :].splitlines():
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def cancels_in_progress(block: str) -> bool:
+    """Anything but an explicit `false` cancels.
+
+    An expression such as `${{ github.event_name != 'push' }}` is not provably safe from
+    here, so it is read as cancelling rather than waved through.
+    """
+    match = CANCEL_SETTING.search(block)
+    if match is None:
+        return False
+    return unquote(match.group(1)).lower() != "false"
+
+
+def group_of(block: str) -> str | None:
+    match = GROUP_SETTING.search(block)
+    return unquote(match.group(1)) if match else None
+
+
+def check_closure_concurrency_text(text: str, rel: str) -> list[str]:
+    """The one-shot pull-request-closure handler must not sit in a cancelling group.
+
+    `handle_pr_state.py` moves a merged pull request's controlling Issue to
+    release-ready. It answers a `closed` event that will never be re-delivered, so a
+    cancellation loses the transition permanently -- and a cancelled run is
+    indistinguishable from the benign cancellations a burst of pushes produces, so it
+    fails invisibly. The idempotent sync alongside it recomputes state from scratch and
+    may keep `cancel-in-progress`; this handler may not (Issue #36).
+
+    Three ways to be cancellable, all rejected: a workflow-level cancelling group, which
+    covers every trigger; a cancelling group on the handler's own job; and a group the
+    handler shares with a cancelling job, since `cancel-in-progress` is a property of the
+    *incoming* run -- the other job's runs would cancel this one however this job is
+    configured.
+    """
+    if CLOSURE_HANDLER not in text:
+        return []
+    failures: list[str] = []
+    header = text[: jobs_offset(text)]
+    declared = CONCURRENCY_KEY.search(header)
+    if declared and cancels_in_progress(concurrency_block(header)):
+        failures.append(
+            f"{rel}:{line_of(text, declared.start())}: a workflow-level cancel-in-progress group "
+            f"covers every trigger, so any of them can cancel the one-shot {CLOSURE_HANDLER} run; "
+            "give each job the group its own idempotence justifies"
+        )
+    blocks = job_blocks(text)
+    for name, body in blocks:
+        if CLOSURE_HANDLER not in body:
+            continue
+        own = concurrency_block(body)
+        if cancels_in_progress(own):
+            failures.append(
+                f"{rel}: job {name!r} runs {CLOSURE_HANDLER} under cancel-in-progress; "
+                "a one-shot closure handler must not be cancellable"
+            )
+        group = group_of(own)
+        if group is None:
+            continue
+        for other, other_body in blocks:
+            if other == name:
+                continue
+            shared = concurrency_block(other_body)
+            if group_of(shared) == group and cancels_in_progress(shared):
+                failures.append(
+                    f"{rel}: job {name!r} runs {CLOSURE_HANDLER} in concurrency group {group!r}, "
+                    f"which job {other!r} shares with cancel-in-progress; that job's runs would "
+                    "cancel this one"
+                )
+    return failures
 
 
 def check(path: Path) -> list[str]:
@@ -53,19 +179,15 @@ def check(path: Path) -> list[str]:
             )
 
     if "anthropics/claude-code-action@" in text:
-        action_offset = text.index("anthropics/claude-code-action@")
-        job_starts = list(re.finditer(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text))
-        start = max((m.start() for m in job_starts if m.start() < action_offset), default=0)
-        end = min((m.start() for m in job_starts if m.start() > action_offset), default=len(text))
-        job_block = text[start:end]
+        claude_block = job_containing(text, "anthropics/claude-code-action@")
         if re.search(
             r"(?im)^\s*(?:contents|pull-requests|issues|actions|checks)\s*:\s*write\s*$",
-            job_block,
+            claude_block,
         ):
             failures.append(
                 f"{path.relative_to(ROOT)}: Claude-key job appears to have repository write permission"
             )
-        if '--disallowedTools "Edit,Write,NotebookEdit"' not in job_block:
+        if '--disallowedTools "Edit,Write,NotebookEdit"' not in claude_block:
             failures.append(f"{path.relative_to(ROOT)}: advisory Claude job must explicitly deny edit tools")
         if "sanitize_claude_input.py" not in text:
             failures.append(
@@ -74,6 +196,7 @@ def check(path: Path) -> list[str]:
         if "head.repo.full_name == github.repository" not in text:
             failures.append(f"{path.relative_to(ROOT)}: Claude review must reject forked pull requests")
 
+    failures.extend(check_closure_concurrency_text(text, str(path.relative_to(ROOT))))
     return failures
 
 

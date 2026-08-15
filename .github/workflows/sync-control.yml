@@ -15,14 +15,28 @@ permissions:
   issues: write
   pull-requests: read
 
-concurrency:
-  group: control-issue-sync
-  cancel-in-progress: true
+# Deliberately no workflow-level concurrency. One group here would cover every
+# trigger, which is what let a `workflow_run` completing in the same second
+# cancel a merge's one-shot closure handler (Issue #36). Each job below declares
+# the group that suits its own idempotence instead.
 
 jobs:
-  sync:
+  close:
+    # A one-shot edge handler for an event that will never fire again. Losing this
+    # run leaves the controlling Issue claiming the work is still active after it
+    # has shipped, and a cancelled run is indistinguishable from a benign one.
+    #
+    # Keyed on the pull request, so no other pull request and no other trigger can
+    # contend for this group. Within one pull request a close/reopen/close sequence
+    # can still supersede a queued run -- GitHub cancels a previously *pending* run
+    # in a group even under cancel-in-progress: false -- but that is benign here,
+    # because the surviving run is the later event and carries the later state.
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: control-issue-close-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: false
     steps:
       - name: Check out only the protected default branch
         uses: actions/checkout@v6
@@ -30,10 +44,33 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - name: Update controlling Issue after PR closure
-        if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 workflow/handle_pr_state.py
+
+  sync:
+    # Idempotent: it recomputes the pinned control Issue from current state, so
+    # discarding a redundant run during a burst of pushes costs nothing.
+    #
+    # `needs: close` restores the ordering the single-job version got for free.
+    # sync_control renders the control block from every open Issue's state labels,
+    # so running it before the closure handler has moved this PR's Issue would
+    # publish a control body listing shipped work as still active. `!cancelled()`
+    # rather than `success()`: close is skipped on every non-closure event and may
+    # fail on its own, and neither is a reason to leave the control Issue stale.
+    needs: close
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: control-issue-sync
+      cancel-in-progress: true
+    steps:
+      - name: Check out only the protected default branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
       - name: Synchronize the pinned control Issue
         env:
           GH_TOKEN: ${{ github.token }}
