@@ -135,11 +135,14 @@ def main() -> int:
         exit_code = 1
     record_outcome(root, event, hook_event, tool, command, exit_code)
 
-    if tool == "Bash" and command:
+    # Both shells, from the one taxonomy in common: a command retried unchanged until it
+    # passes is the same loop whichever shell runs it, and until Issue #59 the PowerShell
+    # tool matched no matcher, so this hook never saw its retries at all.
+    if tool in COMMAND_TOOLS and command:
         if blind_retry_block(root, command, failed_event or exit_code not in (None, 0)):
             return 0
 
-    if not failed_event and tool in {"Edit", "Write", "NotebookEdit"}:
+    if not failed_event and tool in WRITE_TOOLS:
         validate_changed_files(root)
     return 0
 

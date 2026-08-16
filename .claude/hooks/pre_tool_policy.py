@@ -19,9 +19,26 @@ DENY = [
     (r"\bgit\s+reset\s+--hard\b", "Hard reset is prohibited in a standard task session."),
     (r"\bgit\s+clean\b[^\n]*(?:-[A-Za-z]*[fx][A-Za-z]*|--force)", "Destructive git clean is prohibited."),
     (r"\brm\s+-rf\s+(?:/|~|\$HOME|\.git)(?:\s|$)", "Destructive filesystem deletion is prohibited."),
+    # The same prohibition in PowerShell, which spells it as a cmdlet with separate
+    # switches rather than a bundled `-rf`, so the entry above never saw it. The target
+    # carries the decision here instead of the switches: `-Recurse` may be abbreviated to
+    # any prefix and may sit on either side of the path, while deleting a drive root, a
+    # home directory or `.git` is catastrophic with or without it.
+    (
+        r"\b(?:Remove-Item|ri|rm|rmdir|rd|del|erase)\b[^\n|;]*?(?:\s|['\"])(?:/|[A-Za-z]:[\\/]?|~|\$HOME|\$env:USERPROFILE|\.git)[\\/]?(?=[\s'\"]|$)",
+        "Destructive filesystem deletion is prohibited.",
+    ),
     (r"\bdocker\s+system\s+prune\b", "Docker system pruning is prohibited in an agent session."),
     (
         r"\b(?:curl|wget)\b[^\n]*\|\s*(?:sh|bash|zsh)\b",
+        "Piping remote content directly into a shell is prohibited.",
+    ),
+    # PowerShell's spelling of the entry above: nothing here reaches `sh`, `bash` or `zsh`
+    # for that pattern to match. Both orders are refused because `iex (iwr $url)` is as
+    # common as the pipeline form.
+    (
+        r"\b(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget)\b[^\n]*\|\s*(?:Invoke-Expression|iex)\b"
+        r"|\b(?:Invoke-Expression|iex)\b[^\n]*\b(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget)\b",
         "Piping remote content directly into a shell is prohibited.",
     ),
     (r"\bchmod\s+(?:-R\s+)?777\b", "World-writable permissions are prohibited."),
@@ -92,18 +109,24 @@ def deny(root: Path, event: dict, issue_no: int | None, reason: str, category: s
     )
 
 
-# The tools that name a repository file in their own arguments. .claude/settings.json
-# registers this hook for `mcp__.*` too, and that is deliberately wider than this set: an
-# MCP call still reaches the lease and telemetry paths. It is not listed here because no
-# MCP server is configured for this repository -- there is no .mcp.json and `mcpServers`
-# is empty for this project -- and every MCP tool reachable in the session writes to a
-# remote service or a browser, never to the checkout. An MCP tool that does write files
-# would name its target under some server-defined key, not `file_path`, so listing one
-# here without also reading its key would look like coverage while checking nothing.
-WRITE_TOOLS = {"Edit", "Write", "NotebookEdit"}
+# Paths worth a second look wherever they appear in a command line, including inside an
+# argument this hook makes no attempt to parse. Either separator: PowerShell writes
+# `.github\workflows\ci-pr.yml` and that is the same file.
 RISK_PATH_HINTS = (
-    r"(?:^|\s)(\.github/(?:workflows|actions)/\S+|[^\s]*(?:migration|schema|auth|security|deploy)[^\s]*)"
+    r"(?:^|\s)(\.github[\\/](?:workflows|actions)[\\/]\S+"
+    r"|[^\s]*(?:migration|schema|auth|security|deploy)[^\s]*)"
 )
+# The verbs that make what follows them a file the command is about to change, rather than
+# one it happens to name. The hints above only know a handful of words, so they see
+# `.github/workflows/ci-pr.yml` and miss `ci/run`; a token a write verb is aimed at is
+# judged against every risk glob instead, which is what the Issue's own example --
+# `Set-Content ci/run` -- needs. One pattern covers both shells: redirection is spelled the
+# same in each, and a PowerShell session reaches for Set-Content where bash reaches for
+# `tee`. Reads are deliberately absent: Get-Content of a risk path changes nothing.
+WRITE_VERBS = re.compile(
+    r">>?|\b(?:Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Tee-Object|tee)\b", re.I
+)
+STATEMENT_END = re.compile(r"[;|\n]")
 
 
 def lease_conflict(
@@ -272,6 +295,39 @@ def edited_paths(root: Path, tool: str, tool_input: dict) -> list[str]:
     return paths
 
 
+def write_targets(command: str) -> list[str]:
+    """The tokens this command's own write verbs are aimed at.
+
+    Every token up to the end of the statement, not just the first, because a cmdlet takes
+    its path as a named parameter in any position: `-Encoding utf8 -Path ci/run` puts a
+    switch value where the path would otherwise be. Tokens beginning with `-` are switches;
+    the rest are candidate paths, and a candidate that matches no risk glob costs nothing.
+    Surrounding quotes come off and separators are folded to `/`, so a quoted Windows
+    spelling meets the globs in the form they are written in.
+    """
+    targets: list[str] = []
+    for match in WRITE_VERBS.finditer(command):
+        rest = command[match.end() :]
+        end = STATEMENT_END.search(rest)
+        for token in rest[: end.start() if end else len(rest)].split():
+            if not token.startswith("-"):
+                targets.append(token.strip("'\"").replace("\\", "/"))
+    return targets
+
+
+def command_paths(command: str) -> list[str]:
+    """Every repository path a shell command names, spelled the way the risk globs are.
+
+    Backslashes are folded because fnmatch only treats the two separators as equal on
+    Windows: left as they arrive, `Set-Content .claude\\hooks\\x` would be refused on the
+    machine that ran it and allowed by the same check in Linux CI. Folding can only add
+    matches -- no risk glob is written with a backslash -- so nothing already refused
+    becomes allowed by it.
+    """
+    hinted = re.findall(RISK_PATH_HINTS, command, re.I)
+    return [token.replace("\\", "/") for token in hinted] + write_targets(command)
+
+
 def risk_evidence(matches: dict[str, tuple[str, str]], labels: list[str]) -> str:
     return ", ".join(f"{label} ({matches[label][0]} matched glob {matches[label][1]})" for label in labels)
 
@@ -281,8 +337,8 @@ def missing_risk_labels(
 ) -> str | None:
     command = str(tool_input.get("command") or "")
     paths = edited_paths(root, tool, tool_input)
-    if tool == "Bash":
-        paths += re.findall(RISK_PATH_HINTS, command, re.I)
+    if tool in COMMAND_TOOLS:
+        paths += command_paths(command)
     matches = risk_matches(cfg, paths)
     if not matches or not issue_no:
         return None
@@ -312,7 +368,14 @@ def missing_risk_labels(
 
 
 def capture_replacement(root: Path, cfg: dict, tool: str, command: str) -> str | None:
-    """Reroute verbose commands through the capture wrapper to bound token cost."""
+    """Reroute verbose commands through the capture wrapper to bound token cost.
+
+    Bash alone, unlike every other check here. The wrapper re-runs what it is handed in the
+    bash the gates run in, and the replacement is quoted with shlex, so feeding it a
+    PowerShell command line would run different text in a different shell. This is a
+    token-cost optimisation rather than a control: leaving the PowerShell tool out of it
+    costs context, never enforcement.
+    """
     if tool != "Bash" or not cfg.get("token_control", {}).get("capture_noisy_commands", True):
         return None
     if not NOISY.search(command) or "capture.py" in command or len(command) >= 16000:
@@ -336,7 +399,7 @@ def main() -> int:
 
     checks = [
         ("foreign-lease", lease_conflict(root, cfg, tool, command, issue_no, session_id)),
-        ("command-policy", command_violation(root, command) if tool == "Bash" else None),
+        ("command-policy", command_violation(root, command) if tool in COMMAND_TOOLS else None),
         ("missing-risk-label", missing_risk_labels(root, cfg, tool, tool_input, issue_no)),
     ]
     for category, reason in checks:

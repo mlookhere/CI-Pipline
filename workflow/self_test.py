@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import os
 import re
@@ -39,6 +40,12 @@ BARE_PYTHON3 = re.compile(r"(?<![-\w])python3\b")
 BARE_PYTHON = re.compile(r"(?<![-\w./\\])(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|py)(?![\w.\-])")
 # Hook commands go through this wrapper rather than naming an interpreter (Issue #38).
 HOOK_RUNNER = ".claude/hooks/run"
+# Where the tool taxonomy the policy hooks judge by actually lives.
+HOOK_COMMON = ".claude/hooks/common.py"
+# The events whose matcher decides whether a policy hook runs at all. Being outside one of
+# these is not weakened enforcement, it is none: the hook is never invoked, so nothing
+# fails, nothing is logged, and the tool is simply ungoverned (Issue #59).
+POLICY_MATCHED_EVENTS = ("PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure")
 # The whole command, anchored at both ends. A substring test for the runner passes for
 # `sh -c 'evil' # .claude/hooks/run` and for a runner call with `|| python x` appended;
 # there is exactly one shape a hook command is allowed to take, so require it exactly.
@@ -115,6 +122,55 @@ def check_hooks(hooks_config: Any) -> list[str]:
         for group in groups:
             for hook in group.get("hooks", []):
                 failures += check_hook_entry(event, hook)
+    return failures
+
+
+def hook_policy_matcher(failures: list[str]) -> str | None:
+    """The matcher the hooks' own tool taxonomy implies, read from the hooks themselves.
+
+    Loaded from source rather than restated here. Claude Code reads .claude/settings.json
+    as data and cannot call into this repository's code, so the matcher in that file is a
+    copy of the taxonomy by necessity -- and an uncompared copy is exactly how the
+    PowerShell tool came to sit outside every matcher while the settings file two keys away
+    switched it on. Comparing them is what makes common.py authoritative rather than merely
+    first.
+    """
+    path = ROOT / HOOK_COMMON
+    try:
+        spec = importlib.util.spec_from_file_location("hook_common", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"no loader for {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return str(module.POLICY_MATCHER)
+    except (OSError, ImportError, AttributeError, SyntaxError) as exc:
+        failures.append(f"{HOOK_COMMON}: POLICY_MATCHER could not be read ({exc})")
+        return None
+
+
+def check_policy_matchers(hooks_config: Any) -> list[str]:
+    """Every policy hook is registered for exactly the tools its code is written to judge."""
+    failures: list[str] = []
+    expected = hook_policy_matcher(failures)
+    if expected is None:
+        return failures
+    wanted = set(expected.split("|"))
+    hooks = hooks_config.get("hooks", {}) if isinstance(hooks_config, dict) else {}
+    for event in POLICY_MATCHED_EVENTS:
+        groups = hooks.get(event) or []
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            actual = set(str(group.get("matcher", "")).split("|"))
+            if actual == wanted:
+                continue
+            uncovered = ", ".join(sorted(wanted - actual)) or "none"
+            failures.append(
+                f".claude/settings.json: {event} matcher disagrees with the tool taxonomy in "
+                f"{HOOK_COMMON} (uncovered: {uncovered}). A tool outside the matcher never "
+                f'reaches the hook, so no policy applies to it. Set the matcher to "{expected}", '
+                "or change COMMAND_TOOLS/WRITE_TOOLS if the taxonomy is what moved."
+            )
     return failures
 
 
@@ -405,6 +461,7 @@ def main() -> int:
             failures.append(f".claude-workflow.json: invalid {branch_kind} branch {value!r}")
 
     failures += check_hooks(hooks_config)
+    failures += check_policy_matchers(hooks_config)
     failures += check_executables()
     failures += check_pr_template()
     failures += check_labels(config)

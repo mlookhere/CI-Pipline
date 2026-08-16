@@ -196,6 +196,38 @@ def test_the_real_settings_file_launches_every_hook_through_the_runner():
     assert not any(self_test.BARE_PYTHON.search(command) for command in commands)
 
 
+def test_the_real_settings_file_registers_the_policy_hooks_for_every_tool_they_judge():
+    """Issue #59: a hook that is never invoked enforces nothing and reports nothing.
+
+    The matcher in settings.json is a copy of the taxonomy in .claude/hooks/common.py --
+    Claude Code reads that file as data and cannot compute one -- so this comparison is
+    what keeps the copy honest.
+    """
+    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert self_test.check_policy_matchers(settings) == []
+    assert "PowerShell" in (self_test.hook_policy_matcher([]) or "")
+
+
+def test_a_matcher_that_drops_a_tool_fails_the_gate():
+    """The matcher this repository shipped until Issue #59, kept as the negative case."""
+    settings = {
+        "hooks": {
+            event: [{"matcher": "Bash|Edit|Write|NotebookEdit|mcp__.*", "hooks": []}]
+            for event in self_test.POLICY_MATCHED_EVENTS
+        }
+    }
+    failures = self_test.check_policy_matchers(settings)
+    assert len(failures) == len(self_test.POLICY_MATCHED_EVENTS), failures
+    assert all("PowerShell" in failure for failure in failures)
+
+
+def test_a_taxonomy_that_cannot_be_read_fails_rather_than_passing_quietly(monkeypatch):
+    """A comparison that could not be made is not a comparison that succeeded."""
+    monkeypatch.setattr(self_test, "HOOK_COMMON", ".claude/hooks/no_such_common.py")
+    failures = self_test.check_policy_matchers({"hooks": {}})
+    assert any("could not be read" in failure for failure in failures), failures
+
+
 @pytest.mark.parametrize(
     "text",
     [
