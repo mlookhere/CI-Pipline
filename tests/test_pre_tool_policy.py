@@ -501,6 +501,9 @@ def test_a_denied_command_is_refused_whichever_shell_would_run_it(root, monkeypa
 POWERSHELL_WRITES = [
     pytest.param("Set-Content -Path ci/run -Value 'x'", "risk:ci", id="named-path"),
     pytest.param("Set-Content ci/run 'x'", "risk:ci", id="positional-path"),
+    # The spelling this repository's own instructions use, and the one `ci/**` misses.
+    pytest.param("Set-Content ./ci/run -Value 'x'", "risk:ci", id="dot-slash-prefix"),
+    pytest.param("Set-Content -Path 'ci/run' -Value 'x'", "risk:ci", id="quoted-path"),
     pytest.param("'x' | Out-File .claude/settings.json", "risk:ci", id="out-file-from-pipeline"),
     pytest.param("'x' > .github/workflows/ci-pr.yml", "risk:ci", id="redirection"),
     # The native spelling on the platform this tool exists for.

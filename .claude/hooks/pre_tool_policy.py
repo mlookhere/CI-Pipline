@@ -295,6 +295,24 @@ def edited_paths(root: Path, tool: str, tool_input: dict) -> list[str]:
     return paths
 
 
+def scraped_token(token: str) -> str:
+    """One token from a command line, in the spelling the risk globs are written in.
+
+    Three differences decide whether a glob sees the same file the shell does, and each of
+    them is the whole difference between refused and allowed. Quotes are how a path with a
+    space is written; backslashes are how Windows writes any path, and fnmatch only folds
+    the separators on Windows, so an unfolded token is refused on the machine that ran it
+    and allowed by the same check in Linux CI; and `./` is how this repository spells its
+    own commands -- `ci/**` does not match `./ci/run`, which is exactly the invocation the
+    project's own instructions use. Every one of the three can only add matches, since no
+    risk glob is written with a quote, a backslash or a leading `./`.
+    """
+    plain = token.strip("'\"").replace("\\", "/")
+    while plain.startswith("./"):
+        plain = plain[2:]
+    return plain
+
+
 def write_targets(command: str) -> list[str]:
     """The tokens this command's own write verbs are aimed at.
 
@@ -302,8 +320,6 @@ def write_targets(command: str) -> list[str]:
     its path as a named parameter in any position: `-Encoding utf8 -Path ci/run` puts a
     switch value where the path would otherwise be. Tokens beginning with `-` are switches;
     the rest are candidate paths, and a candidate that matches no risk glob costs nothing.
-    Surrounding quotes come off and separators are folded to `/`, so a quoted Windows
-    spelling meets the globs in the form they are written in.
     """
     targets: list[str] = []
     for match in WRITE_VERBS.finditer(command):
@@ -311,21 +327,14 @@ def write_targets(command: str) -> list[str]:
         end = STATEMENT_END.search(rest)
         for token in rest[: end.start() if end else len(rest)].split():
             if not token.startswith("-"):
-                targets.append(token.strip("'\"").replace("\\", "/"))
+                targets.append(scraped_token(token))
     return targets
 
 
 def command_paths(command: str) -> list[str]:
-    """Every repository path a shell command names, spelled the way the risk globs are.
-
-    Backslashes are folded because fnmatch only treats the two separators as equal on
-    Windows: left as they arrive, `Set-Content .claude\\hooks\\x` would be refused on the
-    machine that ran it and allowed by the same check in Linux CI. Folding can only add
-    matches -- no risk glob is written with a backslash -- so nothing already refused
-    becomes allowed by it.
-    """
+    """Every repository path a shell command names, spelled the way the risk globs are."""
     hinted = re.findall(RISK_PATH_HINTS, command, re.I)
-    return [token.replace("\\", "/") for token in hinted] + write_targets(command)
+    return [scraped_token(token) for token in hinted] + write_targets(command)
 
 
 def risk_evidence(matches: dict[str, tuple[str, str]], labels: list[str]) -> str:
