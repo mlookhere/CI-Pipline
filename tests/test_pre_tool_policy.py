@@ -22,11 +22,13 @@ are written against both shells wherever the answer must not depend on which one
 command -- the only way a matcher that quietly drops a tool shows up as a failing test
 rather than as silence.
 
-Issue #60 is the same shape again: the check was not answered wrongly, it was avoided --
-here by answering it from a cache file the judged session can write. The cases below are
-written so the answer has to come from somewhere the session cannot reach, which is why the
-Issue lookup is driven through `gh` rather than through the cache the entry-point cases used
-to seed.
+Issue #60 is the same shape again, three times: the check was not answered wrongly, it was
+avoided. A shell verb the scraper did not know wrote the file without being judged; a
+branch with no Issue in its name skipped the question entirely; and the labels themselves
+came back from a cache file the judged session can write. The cases below are written so
+that each answer has to come from somewhere the session cannot reach -- which is why the
+Issue lookup is driven through `gh` rather than through the cache the entry-point cases
+used to seed.
 """
 
 from __future__ import annotations
@@ -459,7 +461,14 @@ def test_cache_json_still_serves_a_stale_entry_to_the_callers_that_display_one(r
 # --- main(), end to end --------------------------------------------------------------
 
 
-def _drive_main(root: Path, monkeypatch, tool: str, tool_input: dict, labels: tuple[str, ...]) -> list[dict]:
+def _drive_main(
+    root: Path,
+    monkeypatch,
+    tool: str,
+    tool_input: dict,
+    labels: tuple[str, ...],
+    issue: int | None = 52,
+) -> list[dict]:
     """Run the hook's entry point on one write tool's event and return everything it emitted."""
     emitted: list[dict] = []
     monkeypatch.setattr(
@@ -469,7 +478,7 @@ def _drive_main(root: Path, monkeypatch, tool: str, tool_input: dict, labels: tu
     )
     monkeypatch.setattr(pre_tool_policy, "git_root", lambda *_: root)
     monkeypatch.setattr(pre_tool_policy, "config", lambda *_: CFG)
-    monkeypatch.setattr(pre_tool_policy, "current_issue", lambda *_: 52)
+    monkeypatch.setattr(pre_tool_policy, "current_issue", lambda *_: issue)
     monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled(*labels))
     monkeypatch.setattr(pre_tool_policy, "foreign_lease", lambda *_: None)
     monkeypatch.setattr(pre_tool_policy, "log_event", lambda *_: None)
@@ -635,6 +644,136 @@ def test_the_settings_matcher_covers_every_tool_the_hooks_judge():
             assert judged <= set(group["matcher"].split("|")), event
 
 
+# --- what a shell command evidently writes (Issue #60) -------------------------------
+#
+# Issue #59 taught the guard redirection and the content cmdlets. Every command below was
+# measured against that code first and reached the risk globs as nothing at all, which is
+# how `sed -i s/a/b/ ci/run` rewrote the gate runner with the check never running. The table
+# runs against both shells for the same reason the denied-command table does: the policy is
+# about the operation, and `cp`, `mv` and `rm` are PowerShell aliases as well as POSIX
+# commands, so an answer that depended on which tool carried the line would be the bug.
+
+SHELL_WRITES = [
+    pytest.param("sed -i s/a/b/ ci/run", "risk:ci", id="sed-in-place"),
+    pytest.param("sed -i.bak 's/x/y/' ci/run", "risk:ci", id="sed-in-place-with-suffix"),
+    pytest.param("perl -pi -e 's/x/y/' pyproject.toml", "risk:dependencies", id="perl-in-place"),
+    pytest.param("cp /tmp/x Dockerfile", "risk:deployment", id="copy-onto-a-risk-path"),
+    pytest.param("mv /tmp/x pyproject.toml", "risk:dependencies", id="move-onto-a-risk-path"),
+    pytest.param("rm ci/run", "risk:ci", id="delete"),
+    pytest.param("truncate -s 0 ci/run", "risk:ci", id="truncate"),
+    pytest.param("install -m 644 /tmp/x ci/run", "risk:ci", id="install"),
+    pytest.param("git checkout origin/dev -- ci/run", "risk:ci", id="checkout-a-path"),
+    pytest.param("git restore --source=origin/dev ci/run", "risk:ci", id="restore-a-path"),
+    # Not an edit, and it stops the gate running as completely as one.
+    pytest.param("chmod -x ci/run", "risk:ci", id="clear-the-executable-bit"),
+    pytest.param("ln -sf /dev/null ci/run", "risk:ci", id="symlink-over-a-risk-path"),
+    pytest.param("Copy-Item /tmp/x ci/run", "risk:ci", id="copy-item"),
+    pytest.param("Move-Item /tmp/x ci/run", "risk:ci", id="move-item"),
+    pytest.param("Rename-Item ci/run ci/run.bak", "risk:ci", id="rename-item"),
+    pytest.param("Clear-Content ci/run", "risk:ci", id="clear-content"),
+]
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize(("command", "label"), SHELL_WRITES)
+def test_a_shell_write_to_a_risk_path_needs_the_label(root, monkeypatch, real_cfg, tool, command, label):
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("type:bug"))
+    reason = pre_tool_policy.missing_risk_labels(root, real_cfg, tool, {"command": command}, 52)
+    assert reason is not None, command
+    assert label in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The reason `install` cannot simply be a word in the verb list: this reads the
+        # manifest it names, and refusing it would refuse the ordinary way to set up a venv.
+        pytest.param("pip install -r requirements.txt", id="install-as-a-subcommand"),
+        pytest.param("sed -n 1,5p ci/run", id="sed-without-an-in-place-switch"),
+        pytest.param("perl -e 'print 1'", id="perl-without-an-in-place-switch"),
+        pytest.param("git checkout dev", id="switching-branch"),
+        pytest.param("git diff --stat ci/run", id="diffing-a-risk-path"),
+    ],
+)
+def test_a_shell_command_that_writes_no_risk_path_never_consults_the_issue(
+    root, monkeypatch, real_cfg, command
+):
+    """The cost of over-approximating is a refused read, so the boundary is pinned too."""
+
+    def explode(*_, **__):
+        raise AssertionError(f"a command that writes nothing must not need a label: {command}")
+
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
+    assert pre_tool_policy.missing_risk_labels(root, real_cfg, "Bash", {"command": command}, 52) is None
+
+
+# --- a branch that carries no controlling Issue (Issue #60) --------------------------
+#
+# `current_issue` reads the number out of the branch name, so on `dev`, on `master` and on
+# any detached HEAD the guard was handed None and returned None: every risk-path change
+# allowed with no check at all, on precisely the branches the protocol controls least.
+
+
+def test_a_risk_path_edit_from_a_branch_with_no_controlling_issue_is_refused(root, monkeypatch):
+    """And refused in its own words: the fix here is a branch, not a label."""
+
+    def explode(*_, **__):
+        raise AssertionError("there is no Issue to look up; the branch name is the answer")
+
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
+    reason = pre_tool_policy.missing_risk_labels(
+        root, CFG, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, None
+    )
+    assert reason is not None
+    assert "work/<issue>-slug" in reason
+    assert "risk:security" in reason
+    assert "Add them to Issue" not in reason
+
+
+@pytest.mark.parametrize(
+    ("tool", "command"),
+    [
+        pytest.param("Bash", "sed -i s/a/b/ ci/run", id="bash-in-place-edit"),
+        pytest.param("Bash", "echo x > .github/workflows/ci-pr.yml", id="bash-redirection"),
+        pytest.param("PowerShell", "Set-Content -Path ci/run -Value 'x'", id="powershell-write"),
+    ],
+)
+def test_a_shell_write_to_a_risk_path_from_a_branch_with_no_issue_is_refused(root, real_cfg, tool, command):
+    reason = pre_tool_policy.missing_risk_labels(root, real_cfg, tool, {"command": command}, None)
+    assert reason is not None, command
+    assert "work/<issue>-slug" in reason
+
+
+@pytest.mark.parametrize(
+    ("tool", "command"),
+    [
+        pytest.param("Bash", "grep -rn token knowledge_nexus/auth/service.py", id="grep"),
+        pytest.param("Bash", "./ci/run fast", id="running-the-gate"),
+        pytest.param("Bash", "git log --oneline -3", id="reading-history"),
+        pytest.param("PowerShell", "Get-Content ci/run", id="reading-a-risk-path"),
+    ],
+)
+def test_reading_a_risk_path_from_a_branch_with_no_issue_stays_allowed(root, real_cfg, tool, command):
+    """The other half of the decision, and the one that keeps the refusal honest.
+
+    A session sitting on `dev` has to be able to read, grep and run the gates; refusing that
+    would refuse work the protocol permits, in the name of a change that is not being made.
+    `grep` of a risk path still needs the label on a task branch -- that case is above -- but
+    here there is no Issue to add one to, so the question is whether anything is being
+    changed, and nothing is.
+    """
+    assert pre_tool_policy.missing_risk_labels(root, real_cfg, tool, {"command": command}, None) is None
+
+
+def test_main_denies_a_risk_path_write_when_the_branch_names_no_issue(root, monkeypatch):
+    emitted = _drive_main(
+        root, monkeypatch, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, (), issue=None
+    )
+    denials = _denials(emitted)
+    assert len(denials) == 1
+    assert "work/<issue>-slug" in denials[0]["permissionDecisionReason"]
+
+
 # --- the real entry point ------------------------------------------------------------
 #
 # Every case above hands the implementation the same key the implementation reads, so all
@@ -743,6 +882,20 @@ def test_the_real_entry_point_allows_a_write_that_touches_no_risk_path(tmp_path)
     root = build_checkout(tmp_path)
     payload = run_entry_point(root, edit_event(root, "pipeline.py"))
     assert decision(payload) == "allow"
+
+
+@pytest.mark.skipif(BASH is None, reason="the hook entry point is bash; no bash on PATH")
+def test_the_real_entry_point_refuses_a_risk_path_edit_on_a_branch_with_no_controlling_issue(tmp_path):
+    """Issue #60: on `dev` this reached `issue_no is None` and returned without checking.
+
+    No Issue lookup is involved, so the refusal does not depend on `gh` being reachable --
+    the branch name is the whole answer.
+    """
+    root = build_checkout(tmp_path, branch_name="dev")
+    payload = run_entry_point(root, edit_event(root))
+    assert decision(payload) == "deny"
+    assert "work/<issue>-slug" in reason_of(payload)
+    assert "'dev'" in reason_of(payload)
 
 
 def powershell_event(root: Path, command: str) -> dict:

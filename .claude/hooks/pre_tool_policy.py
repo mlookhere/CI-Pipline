@@ -121,10 +121,27 @@ RISK_PATH_HINTS = (
 # `.github/workflows/ci-pr.yml` and miss `ci/run`; a token a write verb is aimed at is
 # judged against every risk glob instead, which is what the Issue's own example --
 # `Set-Content ci/run` -- needs. One pattern covers both shells: redirection is spelled the
-# same in each, and a PowerShell session reaches for Set-Content where bash reaches for
-# `tee`. Reads are deliberately absent: Get-Content of a risk path changes nothing.
+# same in each, `cp`/`mv`/`rm` are PowerShell aliases as well as POSIX commands, and a
+# PowerShell session reaches for Set-Content where bash reaches for `tee`. Reads are
+# deliberately absent: Get-Content of a risk path changes nothing.
+#
+# Issue #59 covered redirection and the content cmdlets; Issue #60 measured what was left
+# and adds the verbs that were still walking through -- the in-place editors, the commands
+# that put a file somewhere, `git checkout`/`git restore` writing a path back out of the
+# object store, and `chmod`, because clearing the executable bit on ci/run disables the gate
+# as effectively as editing it. What no verb list reaches is recorded at hinted_paths.
+#
+# `sed` and `perl` are verbs only when an in-place switch is present: `sed -n 1,5p ci/run`
+# reads. `install` has to be the first word of its statement, since `pip install -r
+# requirements.txt` would otherwise read as a write to the manifest it only reads.
 WRITE_VERBS = re.compile(
-    r">>?|\b(?:Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Tee-Object|tee)\b", re.I
+    r">>?"
+    r"|\b(?:Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Remove-Item|Move-Item"
+    r"|Copy-Item|Rename-Item|Set-ItemProperty|Tee-Object|tee|cp|mv|rm|ln|chmod|truncate)\b"
+    r"|\bgit\s+(?:checkout|restore)\b"
+    r"|\b(?:sed|perl)\b(?=[^;|\n]*\s(?:-{1,2}[A-Za-z]*i\b|--in-place))"
+    r"|(?:^|[;|&\n]\s*)install\b",
+    re.I,
 )
 STATEMENT_END = re.compile(r"[;|\n]")
 
@@ -331,26 +348,74 @@ def write_targets(command: str) -> list[str]:
     return targets
 
 
-def command_paths(command: str) -> list[str]:
-    """Every repository path a shell command names, spelled the way the risk globs are."""
-    hinted = re.findall(RISK_PATH_HINTS, command, re.I)
-    return [scraped_token(token) for token in hinted] + write_targets(command)
+def hinted_paths(command: str) -> list[str]:
+    """The risk paths a command names without a write verb aimed at them.
+
+    Kept apart from write_targets because the two carry different evidence. A named path is
+    a reason to want the label; a path a write verb points at is a change. The Issue-less
+    branch below refuses only the second, so that a session on `dev` can still read and
+    grep the files it may not edit (Issue #60).
+
+    What no scrape reaches, stated rather than implied: a shell command's write set is only
+    decidable by running it. `python - <<'PY' ... open(risk_path, "w") ... PY`, `bash -c`,
+    `git apply`, `patch < diff`, `dd of=`, and a package manager rewriting a manifest it was
+    never asked about all change files this list cannot name. Scraping string literals out
+    of an inline script was measured and rejected: it refuses honest commands
+    (`python -c "print(open('.claude-workflow.json').read())"`) while one composed path
+    (`open("knowledge_nexus/" + name, "w")`) walks straight through, which buys the
+    appearance of a control and not a control. Those writes are caught on the diff instead,
+    by check_risk_labels in workflow/validate_pr.py, which reads what changed rather than
+    what was typed and is the authoritative gate on every PR.
+    """
+    return [scraped_token(token) for token in re.findall(RISK_PATH_HINTS, command, re.I)]
 
 
 def risk_evidence(matches: dict[str, tuple[str, str]], labels: list[str]) -> str:
     return ", ".join(f"{label} ({matches[label][0]} matched glob {matches[label][1]})" for label in labels)
 
 
+def uncontrolled_change(root: Path, cfg: dict, written: list[str]) -> str | None:
+    """Reason to refuse a risk-path change made from a branch that carries no Issue.
+
+    `current_issue` reads the number out of the branch name, so on `dev`, on `master` and on
+    a detached HEAD there is no Issue to hold the labels -- and the guard used to return None
+    there, which left the least-controlled branch as the only one with no check at all
+    (Issue #60). This repository's protocol already requires a controlling Issue for durable
+    mutation, so the answer is a refusal that names the branch to move to, rather than a
+    question that was never asked.
+
+    Only what the tool evidently writes counts, never every risk path the command names: a
+    session sitting on `dev` legitimately reads, greps and runs the gates over ci/ and
+    .claude/, and refusing that would refuse work the protocol permits. On a task branch a
+    named path still needs its label, because there an Issue exists to carry one.
+    """
+    changes = risk_matches(cfg, written)
+    if not changes:
+        return None
+    return (
+        "Risk-sensitive paths may only be changed from a task branch that names its "
+        f"controlling Issue, and branch {branch(root)!r} names none, so no Issue can carry "
+        "the required label(s): "
+        + risk_evidence(changes, sorted(changes))
+        + ". Create or check out work/<issue>-slug for the Issue that owns this change, "
+        "then retry there."
+    )
+
+
 def missing_risk_labels(
     root: Path, cfg: dict, tool: str, tool_input: dict, issue_no: int | None
 ) -> str | None:
     command = str(tool_input.get("command") or "")
-    paths = edited_paths(root, tool, tool_input)
+    written = edited_paths(root, tool, tool_input)
+    named: list[str] = []
     if tool in COMMAND_TOOLS:
-        paths += command_paths(command)
-    matches = risk_matches(cfg, paths)
-    if not matches or not issue_no:
+        written += write_targets(command)
+        named = hinted_paths(command)
+    matches = risk_matches(cfg, written + named)
+    if not matches:
         return None
+    if not issue_no:
+        return uncontrolled_change(root, cfg, written)
     # Live, never cached (Issue #60): cache_json keeps its answer in .git/claude/cache/,
     # which no risk glob and no permission rule covers, so the labels came back from a file
     # this session can write. Issue #52 stopped an *expired* copy from answering; a forged
