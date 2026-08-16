@@ -1,15 +1,16 @@
-"""Control-plane regressions for Issue #35.
+"""Control-plane regressions for Issues #35 and #67.
 
 The control model treats a GitHub Issue body as handoff truth, and `./flow handoff` reads
 that body and writes it back. Anything lossy in that round-trip corrupts the record the
 next session resumes from, so these tests pin the round-trip itself rather than the
 commands wrapped around it.
 
-Every test here fails against the code before #35.
+Every test here fails against the code before the fix it pins.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -27,6 +28,7 @@ import claude_flow  # noqa: E402
 
 EM_DASH = "\u2014"
 CURLY_QUOTE = "\u201d"
+ARROW = "\u2192"
 
 # ------------------------------------------------------------------ decoding
 
@@ -235,3 +237,55 @@ def test_a_venv_tool_is_found_in_either_layout(tmp_path):
     assert claude_flow.venv_tool(posix, "pre-commit") is not None
 
     assert claude_flow.venv_tool(tmp_path / "absent", "pre-commit") is None
+
+
+# --------------------------------------------------------------- printing (#67)
+
+
+def _stream(encoding: str) -> io.TextIOWrapper:
+    """The stream `./flow` is actually handed: stdout is a pipe, so Python encodes it with
+    the locale codec -- cp1252 on Windows, UTF-8 on a runner -- rather than gh's UTF-8."""
+    return io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors="surrogateescape")
+
+
+@pytest.mark.parametrize(
+    "encoding",
+    [
+        pytest.param("cp1252", id="windows-pipe"),
+        pytest.param("utf-8", id="linux-runner"),
+    ],
+)
+def test_start_prints_an_issue_body_the_stream_codec_cannot_encode(encoding, monkeypatch):
+    """Issue #67: the arrow in control Issue #12 killed `./flow start`, so the one command
+    whose purpose is to show acceptance criteria before a mutation was the one that could
+    not. The stream is supplied here instead of inherited because a runner's stdout is
+    already UTF-8, which is why CI never saw this.
+    """
+    stdout = _stream(encoding)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", _stream(encoding))
+    monkeypatch.setattr(sys, "argv", ["flow", "start", "67"])
+    monkeypatch.setattr(claude_flow, "require_gh", lambda: None)
+    monkeypatch.setattr(claude_flow, "load_config", lambda: {})
+    monkeypatch.setattr(claude_flow, "find_control_issue", lambda _config: {"number": 12})
+    monkeypatch.setattr(claude_flow, "shell", lambda command, **_: None)
+    monkeypatch.setattr(claude_flow, "output", lambda command, **_: f"Read #12 {ARROW} act.")
+
+    assert claude_flow.main() == 0
+
+    stdout.flush()
+    printed = stdout.buffer.getvalue().decode("utf-8")
+    assert ARROW in printed, "an acceptance criterion must not lose characters on the way out"
+
+
+def test_a_stream_that_cannot_be_reconfigured_still_prints(monkeypatch):
+    """The briefing must survive a stdout that is not a text wrapper at all -- absent under
+    a detached process, a bare buffer under some capture layers."""
+    stdout = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", None)
+
+    claude_flow.use_utf8_streams()
+    print(ARROW)
+
+    assert stdout.getvalue() == f"{ARROW}\n"
