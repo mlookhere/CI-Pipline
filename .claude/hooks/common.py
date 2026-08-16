@@ -135,7 +135,16 @@ def changed_files(root: Path) -> list[str]:
     return sorted(names)
 
 
-def cache_json(root: Path, key: str, command: list[str], ttl: int = 60) -> Any:
+def cache_json(root: Path, key: str, command: list[str], ttl: int = 60, *, allow_stale: bool = True) -> Any:
+    """The command's JSON output, from cache while it is inside `ttl`.
+
+    `allow_stale` decides what happens when the command then fails -- `gh` absent,
+    unauthenticated, offline, rate-limited. Serving the expired copy is right for a caller
+    that would rather show something slightly old than nothing, which is what session
+    context and the compaction summary want. It is wrong for a caller deciding whether to
+    permit something: answering that from a copy already declared too old is fail-open
+    however the refusal text is worded, so those callers pass False and get None.
+    """
     cache = state_dir(root) / "cache" / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
     now = time.time()
     try:
@@ -152,18 +161,21 @@ def cache_json(root: Path, key: str, command: list[str], ttl: int = 60) -> Any:
             return value
         except json.JSONDecodeError:
             pass
+    if not allow_stale:
+        return None
     try:
         return json.loads(cache.read_text(encoding="utf-8")).get("value")
     except (OSError, json.JSONDecodeError):
         return None
 
 
-def gh_issue(root: Path, number: int) -> dict[str, Any] | None:
+def gh_issue(root: Path, number: int, *, allow_stale: bool = True) -> dict[str, Any] | None:
     value = cache_json(
         root,
         f"issue:{number}",
         ["gh", "issue", "view", str(number), "--json", "number,title,body,state,url,labels,updatedAt"],
         ttl=45,
+        allow_stale=allow_stale,
     )
     return value if isinstance(value, dict) else None
 
