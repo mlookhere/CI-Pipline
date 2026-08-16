@@ -21,6 +21,12 @@ same settings file whose matcher left it out, so no policy ran for it at all. It
 are written against both shells wherever the answer must not depend on which one runs the
 command -- the only way a matcher that quietly drops a tool shows up as a failing test
 rather than as silence.
+
+Issue #60 is the same shape again: the check was not answered wrongly, it was avoided --
+here by answering it from a cache file the judged session can write. The cases below are
+written so the answer has to come from somewhere the session cannot reach, which is why the
+Issue lookup is driven through `gh` rather than through the cache the entry-point cases used
+to seed.
 """
 
 from __future__ import annotations
@@ -61,12 +67,42 @@ def _issue(*labels: str) -> dict:
 
 
 def _labelled(*labels: str):
-    """A gh_issue stand-in that tolerates the keyword the caller passes it.
-
-    `missing_risk_labels` asks for the Issue with allow_stale=False, and a fake that only
-    accepts positionals would hide that by raising where the real call succeeds.
-    """
+    """A gh_issue_live stand-in that tolerates whatever the caller passes it."""
     return lambda *_, **__: _issue(*labels)
+
+
+def stub_gh(monkeypatch, *labels: str, answers: bool = True) -> None:
+    """Answer `gh issue view` in process, leaving every other subprocess this hook runs alone.
+
+    The guard reads the Issue live (Issue #60), so this is the seam that decides the answer:
+    a test that seeded the cache instead would be asserting the very forgery the fix refuses
+    to read.
+    """
+    real_run = common.run
+
+    def fake_run(args, **keywords):
+        if list(args[:3]) == ["gh", "issue", "view"]:
+            if not answers:
+                return subprocess.CompletedProcess(args, 1, "", "")
+            payload = json.dumps({"number": 52, "labels": [{"name": name} for name in labels]})
+            return subprocess.CompletedProcess(args, 0, payload, "")
+        return real_run(args, **keywords)
+
+    monkeypatch.setattr(common, "run", fake_run)
+
+
+def forge_issue_cache(root: Path, number: int, labels: tuple[str, ...]) -> None:
+    """Write the cache entry a session could write for itself, claiming `labels`.
+
+    Fresh rather than expired: Issue #52 already stopped an expired copy from answering, and
+    a forgery chooses its own timestamp, so the only interesting case is one that passes
+    every check the cache itself can make.
+    """
+    digest = hashlib.sha256(f"issue:{number}".encode()).hexdigest()
+    cache = root / ".git" / "claude" / "cache" / f"{digest}.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    value = {"number": number, "labels": [{"name": name} for name in labels]}
+    cache.write_text(json.dumps({"time": time.time(), "value": value}), encoding="utf-8")
 
 
 @pytest.fixture(autouse=True)
@@ -158,7 +194,7 @@ def test_a_file_in_a_sibling_worktree_of_this_repository_is_still_judged(tmp_pat
 
     assert pre_tool_policy.repo_relative(main, str(workflow)) == ".github/workflows/ci-pr.yml"
 
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled("risk:security"))
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("risk:security"))
     reason = pre_tool_policy.missing_risk_labels(main, CFG, "Edit", {"file_path": str(workflow)}, 52)
     assert reason is not None
     assert "risk:ci" in reason
@@ -190,7 +226,7 @@ def test_the_verbatim_unc_prefix_becomes_the_plain_unc_spelling():
 @pytest.mark.skipif(os.name != "nt", reason="an extended-length path is a Windows spelling")
 def test_an_extended_length_spelling_of_a_risk_path_is_denied(root, monkeypatch):
     """`\\\\?\\` survives resolve(), so the anchor never matched the root and the write was allowed."""
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled())
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled())
     verbatim = "\\\\?\\" + str(root / "knowledge_nexus" / "config.py")
     assert pre_tool_policy.repo_relative(root, verbatim) == "knowledge_nexus/config.py"
     reason = pre_tool_policy.missing_risk_labels(root, CFG, "Write", {"file_path": verbatim}, 52)
@@ -210,7 +246,7 @@ def test_a_write_in_no_checkout_of_this_repository_is_dropped_and_recorded(
     def explode(*_, **__):
         raise AssertionError("a scratch file outside the checkout must not reach the Issue lookup")
 
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", explode)
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
     elsewhere = tmp_path_factory.mktemp("scratch") / "knowledge_nexus" / "config.py"
     reason = pre_tool_policy.missing_risk_labels(root, CFG, "Write", {"file_path": str(elsewhere)}, 52)
     assert reason is None
@@ -232,7 +268,7 @@ def test_a_write_in_no_checkout_of_this_repository_is_dropped_and_recorded(
 )
 def test_each_write_tool_is_read_through_the_key_it_actually_uses(root, monkeypatch, tool, key):
     """The payload key is the whole fix, so every write tool is driven through its real one."""
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled("type:bug"))
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("type:bug"))
     reason = pre_tool_policy.missing_risk_labels(
         root, CFG, tool, {key: str(root / "knowledge_nexus" / "config.py")}, 52
     )
@@ -242,7 +278,7 @@ def test_each_write_tool_is_read_through_the_key_it_actually_uses(root, monkeypa
 
 
 def test_the_same_edit_with_the_label_present_is_allowed(root, monkeypatch):
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled("risk:security"))
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("risk:security"))
     reason = pre_tool_policy.missing_risk_labels(
         root, CFG, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, 52
     )
@@ -255,7 +291,7 @@ def test_a_risk_path_named_only_in_the_replacement_text_is_not_what_is_judged(ro
     def explode(*_, **__):
         raise AssertionError("a risk path quoted inside the new text is not a path being written")
 
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", explode)
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
     reason = pre_tool_policy.missing_risk_labels(
         root,
         CFG,
@@ -274,7 +310,7 @@ def test_a_write_to_a_non_risk_path_never_consults_the_issue(root, monkeypatch):
     def explode(*_, **__):
         raise AssertionError("gh_issue must not be called for a path no risk glob matches")
 
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", explode)
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
     reason = pre_tool_policy.missing_risk_labels(
         root, CFG, "Write", {"file_path": str(root / "knowledge_nexus" / "pipeline.py")}, 52
     )
@@ -282,7 +318,7 @@ def test_a_write_to_a_non_risk_path_never_consults_the_issue(root, monkeypatch):
 
 
 def test_a_notebook_edit_under_a_risk_directory_is_denied(root, monkeypatch):
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled())
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled())
     reason = pre_tool_policy.missing_risk_labels(
         root, CFG, "NotebookEdit", {"notebook_path": str(root / ".claude" / "hooks" / "x.ipynb")}, 52
     )
@@ -301,7 +337,7 @@ def test_edited_paths_still_reads_patch_headers(root):
 
 
 def test_a_bash_command_naming_a_workflow_file_is_still_recognised(root, monkeypatch):
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled())
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled())
     reason = pre_tool_policy.missing_risk_labels(
         root, CFG, "Bash", {"command": "sed -i s/a/b/ .github/workflows/ci-pr.yml"}, 52
     )
@@ -312,7 +348,7 @@ def test_a_bash_command_naming_a_workflow_file_is_still_recognised(root, monkeyp
 def test_the_real_configuration_maps_the_incident_path_to_security(root, monkeypatch):
     """The Issue's own example: knowledge_nexus/config.py, edited directly, must need risk:security."""
     cfg = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled("risk:ci"))
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("risk:ci"))
     reason = pre_tool_policy.missing_risk_labels(
         root, cfg, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, 52
     )
@@ -324,7 +360,7 @@ def test_the_real_configuration_maps_the_incident_path_to_security(root, monkeyp
 
 
 def test_the_refusal_names_the_path_and_the_glob_that_matched(root, monkeypatch):
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled())
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled())
     reason = pre_tool_policy.missing_risk_labels(
         root, CFG, "Edit", {"file_path": str(root / ".claude" / "hooks" / "pre_tool_policy.py")}, 52
     )
@@ -340,7 +376,7 @@ def test_a_bash_command_refused_on_a_scraped_token_says_which_token(root, monkey
     developer re-running the same command wondering what the hook objected to.
     """
     cfg = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled())
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled())
     reason = pre_tool_policy.missing_risk_labels(
         root, cfg, "Bash", {"command": "grep -rn token knowledge_nexus/auth/service.py"}, 52
     )
@@ -355,7 +391,7 @@ def test_an_unreadable_issue_is_refused_for_a_reason_that_names_the_real_problem
     gh_issue returns None when `gh` is missing, unauthenticated, offline or rate-limited.
     The old refusal read as "you forgot risk:security", which is the one thing it is not.
     """
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", lambda *_, **__: None)
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", lambda *_, **__: None)
     reason = pre_tool_policy.missing_risk_labels(
         root, CFG, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, 52
     )
@@ -366,34 +402,58 @@ def test_an_unreadable_issue_is_refused_for_a_reason_that_names_the_real_problem
     assert "Risk-sensitive paths require Issue label(s)" not in reason
 
 
-def test_the_label_lookup_refuses_to_answer_from_an_expired_cache(root, monkeypatch):
-    """An expired copy of the Issue is not an answer to a question about permission.
+# --- where the label answer comes from (Issue #60) -----------------------------------
+#
+# `cache_json` keeps `gh issue view` output under .git/claude/cache/, and no risk glob and
+# no permission rule covers .git/**. So the session being policed can write the file the
+# guard was reading its labels out of, and prompt injection -- already a live threat model
+# here for retrieved document text -- reaches it. Every case below forges that cache and
+# then asserts that it decided nothing.
 
-    cache_json falls back to the stale entry when the command fails, which is right for a
-    status summary and fail-open here: labels removed from the Issue would keep satisfying
-    this check for as long as the file survived. The guard asks with allow_stale=False.
-    """
-    asked: list[bool] = []
 
-    def record(_root, _number, *, allow_stale=True):
-        asked.append(allow_stale)
-        return None
-
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", record)
+def test_a_forged_label_cache_cannot_grant_a_risk_label(root, monkeypatch):
+    """The security property: a cache entry the session wrote is not evidence about an Issue."""
+    forge_issue_cache(root, 52, ("risk:security",))
+    stub_gh(monkeypatch, answers=False)
     reason = pre_tool_policy.missing_risk_labels(
         root, CFG, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, 52
     )
-    assert asked == [False]
     assert reason is not None
+    assert "could not be read" in reason
+    assert "risk:security" in reason
 
 
-def test_cache_json_serves_a_stale_entry_only_when_the_caller_allows_it(root):
-    """The two contracts, at the source: a summary may be old, a permission decision may not."""
+def test_the_live_issue_decides_when_it_contradicts_the_cache(root, monkeypatch):
+    """Not merely ignored on failure: the live answer is the answer, and the cache is not."""
+    forge_issue_cache(root, 52, ("risk:security",))
+    stub_gh(monkeypatch, "type:bug")
+    reason = pre_tool_policy.missing_risk_labels(
+        root, CFG, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, 52
+    )
+    assert reason is not None
+    assert "Add them to Issue #52" in reason
+
+
+def test_a_label_on_the_live_issue_allows_the_write_a_stale_cache_would_refuse(root, monkeypatch):
+    """The other direction, so the fix cannot be mistaken for refusing everything."""
+    forge_issue_cache(root, 52, ())
+    stub_gh(monkeypatch, "risk:security")
+    reason = pre_tool_policy.missing_risk_labels(
+        root, CFG, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, 52
+    )
+    assert reason is None
+
+
+def test_cache_json_still_serves_a_stale_entry_to_the_callers_that_display_one(root):
+    """The cache keeps its lenient contract for session context and the compaction summary.
+
+    Deliberately unchanged: an old Issue title on a status line is better than none. It is
+    only ever wrong as an answer about permission, and the guard no longer asks it one.
+    """
     cache = common.state_dir(root) / "cache" / f"{hashlib.sha256(b'stale-probe').hexdigest()}.json"
     cache.write_text(json.dumps({"time": 0, "value": {"labels": []}}), encoding="utf-8")
     failing = ["git", "rev-parse", "--this-flag-does-not-exist"]
     assert common.cache_json(root, "stale-probe", failing, ttl=45) == {"labels": []}
-    assert common.cache_json(root, "stale-probe", failing, ttl=45, allow_stale=False) is None
 
 
 # --- main(), end to end --------------------------------------------------------------
@@ -410,7 +470,7 @@ def _drive_main(root: Path, monkeypatch, tool: str, tool_input: dict, labels: tu
     monkeypatch.setattr(pre_tool_policy, "git_root", lambda *_: root)
     monkeypatch.setattr(pre_tool_policy, "config", lambda *_: CFG)
     monkeypatch.setattr(pre_tool_policy, "current_issue", lambda *_: 52)
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled(*labels))
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled(*labels))
     monkeypatch.setattr(pre_tool_policy, "foreign_lease", lambda *_: None)
     monkeypatch.setattr(pre_tool_policy, "log_event", lambda *_: None)
     monkeypatch.setattr(pre_tool_policy, "emit", emitted.append)
@@ -525,7 +585,7 @@ POWERSHELL_WRITES = [
 
 @pytest.mark.parametrize(("command", "label"), POWERSHELL_WRITES)
 def test_a_powershell_write_to_a_risk_path_needs_the_label(root, monkeypatch, real_cfg, command, label):
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled("type:bug"))
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("type:bug"))
     reason = pre_tool_policy.missing_risk_labels(root, real_cfg, "PowerShell", {"command": command}, 52)
     assert reason is not None, command
     assert label in reason
@@ -549,12 +609,12 @@ def test_a_powershell_command_that_writes_nothing_never_consults_the_issue(
     def explode(*_, **__):
         raise AssertionError(f"a command that writes nothing must not need a label: {command}")
 
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", explode)
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
     assert pre_tool_policy.missing_risk_labels(root, real_cfg, "PowerShell", {"command": command}, 52) is None
 
 
 def test_a_powershell_write_with_the_label_present_is_allowed(root, monkeypatch, real_cfg):
-    monkeypatch.setattr(pre_tool_policy, "gh_issue", _labelled("risk:ci"))
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("risk:ci"))
     reason = pre_tool_policy.missing_risk_labels(
         root, real_cfg, "PowerShell", {"command": "Set-Content -Path ci/run -Value 'x'"}, 52
     )
@@ -582,10 +642,15 @@ def test_the_settings_matcher_covers_every_tool_the_hooks_judge():
 # which is Issue #52 word for word, and the same trap Issue #59's `command` key sets. These
 # run the hook the way settings.json runs it: a PreToolUse event on stdin, through
 # `.claude/hooks/run`, into a checkout on disk.
+#
+# Issue #60 changes what these can seed. The label answer no longer comes from the cache, so
+# an entry-point case cannot hand the hook a label set by writing one -- that is the fix. The
+# allowed direction is proven where the answer can be controlled honestly, above; here the
+# forged cache is asserted to decide nothing, and an ordinary write is asserted to still pass.
 
 
-def build_checkout(tmp_path: Path) -> Path:
-    """A checkout carrying only what the hook reads, on a branch naming Issue 52."""
+def build_checkout(tmp_path: Path, branch_name: str = "work/52-entry-point") -> Path:
+    """A checkout carrying only what the hook reads, on a branch naming Issue 52 by default."""
     root = tmp_path / "checkout"
     (root / ".claude").mkdir(parents=True)
     shutil.copytree(ROOT / ".claude" / "hooks", root / ".claude" / "hooks")
@@ -594,21 +659,27 @@ def build_checkout(tmp_path: Path) -> Path:
     shutil.copy(ROOT / ".claude-workflow.json", root / ".claude-workflow.json")
     (root / "knowledge_nexus").mkdir()
     (root / "knowledge_nexus" / "config.py").write_text("SETTING = 1\n", encoding="utf-8")
-    make_repo(root, "work/52-entry-point")
+    (root / "knowledge_nexus" / "pipeline.py").write_text("SETTING = 1\n", encoding="utf-8")
+    make_repo(root, branch_name)
     return root
 
 
-def seed_issue_cache(root: Path, number: int, labels: tuple[str, ...]) -> None:
-    """Answer the Issue lookup from its own cache, so the hook never reaches the network.
+def hermetic_environment(root: Path) -> dict[str, str]:
+    """An environment in which `gh` cannot answer, whatever the developer's own is.
 
-    The alternative is a `gh` stub on PATH, which has to be a different file on Windows
-    than on Linux; this reaches the same decision through the layer the hook already has.
+    Every GH_/GITHUB_ variable is dropped and the config directory is pointed at a path that
+    does not exist, so the lookup fails the same way on a machine with `gh` authenticated as
+    on one without `gh` at all -- the fixture repository has no remote, and GH_REPO cannot
+    supply one. The cases below assert what happens when the only label set on the machine is
+    a forged cache entry, and an environment that could reach GitHub would answer for real.
     """
-    digest = hashlib.sha256(f"issue:{number}".encode()).hexdigest()
-    cache = root / ".git" / "claude" / "cache" / f"{digest}.json"
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    value = {"number": number, "labels": [{"name": name} for name in labels]}
-    cache.write_text(json.dumps({"time": time.time(), "value": value}), encoding="utf-8")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("GH_", "GITHUB_"))}
+    environment["GH_CONFIG_DIR"] = str(root / "absent-gh-config")
+    # The interpreter probe accepts a candidate only by running it, so hand it this one
+    # rather than depending on what `python` means on the machine running the tests.
+    environment["CLAUDE_PROJECT_DIR"] = str(root)
+    environment["CLAUDE_CI_PYTHON"] = sys.executable
+    return environment
 
 
 def run_entry_point(root: Path, event: dict) -> dict:
@@ -622,43 +693,56 @@ def run_entry_point(root: Path, event: dict) -> dict:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        # The interpreter probe accepts a candidate only by running it, so hand it this one
-        # rather than depending on what `python` means on the machine running the tests.
-        env={**os.environ, "CLAUDE_PROJECT_DIR": str(root), "CLAUDE_CI_PYTHON": sys.executable},
+        env=hermetic_environment(root),
         cwd=str(root),
     )
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout) if done.stdout.strip() else {}
 
 
-def edit_event(root: Path) -> dict:
+def edit_event(root: Path, name: str = "config.py") -> dict:
     return {
         "session_id": "entry-point",
         "cwd": str(root),
         "tool_name": "Edit",
         "tool_input": {
-            "file_path": str(root / "knowledge_nexus" / "config.py"),
+            "file_path": str(root / "knowledge_nexus" / name),
             "old_string": "SETTING = 1",
             "new_string": "SETTING = 2",
         },
     }
 
 
-@pytest.mark.skipif(BASH is None, reason="the hook entry point is bash; no bash on PATH")
-def test_the_real_entry_point_denies_an_unlabelled_edit_of_a_risk_path(tmp_path):
-    root = build_checkout(tmp_path)
-    seed_issue_cache(root, 52, ("type:bug",))
-    payload = run_entry_point(root, edit_event(root))
-    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "risk:security" in payload["hookSpecificOutput"]["permissionDecisionReason"]
+def decision(payload: dict) -> str:
+    return str(payload.get("hookSpecificOutput", {}).get("permissionDecision") or "allow")
+
+
+def reason_of(payload: dict) -> str:
+    return str(payload["hookSpecificOutput"]["permissionDecisionReason"])
 
 
 @pytest.mark.skipif(BASH is None, reason="the hook entry point is bash; no bash on PATH")
-def test_the_real_entry_point_allows_the_same_edit_once_the_label_is_on_the_issue(tmp_path):
+def test_the_real_entry_point_denies_a_risk_path_edit_the_label_cache_claims_is_allowed(tmp_path):
+    """Issue #60, through the hook as settings.json runs it: the cache is not the answer.
+
+    The forged entry is fresh and well formed -- everything its reader could check about it
+    passes -- and `gh` cannot be reached, so the cache is the only label set on the machine.
+    The edit is refused anyway, and refused for the reason that is true.
+    """
     root = build_checkout(tmp_path)
-    seed_issue_cache(root, 52, ("risk:security",))
+    forge_issue_cache(root, 52, ("risk:security",))
     payload = run_entry_point(root, edit_event(root))
-    assert payload.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+    assert decision(payload) == "deny"
+    assert "could not be read" in reason_of(payload)
+    assert "risk:security" in reason_of(payload)
+
+
+@pytest.mark.skipif(BASH is None, reason="the hook entry point is bash; no bash on PATH")
+def test_the_real_entry_point_allows_a_write_that_touches_no_risk_path(tmp_path):
+    """Nothing here is a blanket refusal: an ordinary edit still passes without any lookup."""
+    root = build_checkout(tmp_path)
+    payload = run_entry_point(root, edit_event(root, "pipeline.py"))
+    assert decision(payload) == "allow"
 
 
 def powershell_event(root: Path, command: str) -> dict:
@@ -675,28 +759,24 @@ def powershell_event(root: Path, command: str) -> dict:
 def test_the_real_entry_point_denies_a_prohibited_command_from_the_powershell_tool(tmp_path):
     """Issue #59: this event previously matched no matcher, so no hook ever saw it."""
     root = build_checkout(tmp_path)
-    seed_issue_cache(root, 52, ("risk:ci",))
     payload = run_entry_point(root, powershell_event(root, "git push --force origin dev"))
-    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "Force-pushing" in payload["hookSpecificOutput"]["permissionDecisionReason"]
+    assert decision(payload) == "deny"
+    assert "Force-pushing" in reason_of(payload)
 
 
 @pytest.mark.skipif(BASH is None, reason="the hook entry point is bash; no bash on PATH")
-def test_the_real_entry_point_denies_an_unlabelled_powershell_write_to_a_risk_path(tmp_path):
+def test_the_real_entry_point_denies_a_powershell_write_to_a_risk_path(tmp_path):
     """The Issue's own example, driven through the entry point: `Set-Content ci/run`."""
     root = build_checkout(tmp_path)
-    seed_issue_cache(root, 52, ("type:bug",))
     payload = run_entry_point(root, powershell_event(root, "Set-Content -Path ci/run -Value 'x'"))
-    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "risk:ci" in reason
-    assert "ci/run" in reason
+    assert decision(payload) == "deny"
+    assert "risk:ci" in reason_of(payload)
+    assert "ci/run" in reason_of(payload)
 
 
 @pytest.mark.skipif(BASH is None, reason="the hook entry point is bash; no bash on PATH")
-def test_the_real_entry_point_allows_the_same_powershell_write_once_the_label_is_present(tmp_path):
-    """Nothing about the fix is a blanket refusal of a tool the session is meant to use."""
+def test_the_real_entry_point_allows_a_powershell_command_that_writes_nothing(tmp_path):
+    """`./ci/run fast` is what this repository asks every session to run; it must survive."""
     root = build_checkout(tmp_path)
-    seed_issue_cache(root, 52, ("risk:ci",))
-    payload = run_entry_point(root, powershell_event(root, "Set-Content -Path ci/run -Value 'x'"))
-    assert payload.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+    payload = run_entry_point(root, powershell_event(root, "./ci/run fast"))
+    assert decision(payload) == "allow"

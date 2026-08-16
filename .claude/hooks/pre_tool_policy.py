@@ -351,11 +351,11 @@ def missing_risk_labels(
     matches = risk_matches(cfg, paths)
     if not matches or not issue_no:
         return None
-    # allow_stale=False: an expired copy of the Issue is not an answer to a question about
-    # permission. Without it `gh` failing for any reason -- absent, unauthenticated,
-    # offline, rate-limited -- serves the last labels it ever saw, so a label removed from
-    # the Issue keeps satisfying this check for as long as the cache file survives.
-    issue = gh_issue(root, issue_no, allow_stale=False)
+    # Live, never cached (Issue #60): cache_json keeps its answer in .git/claude/cache/,
+    # which no risk glob and no permission rule covers, so the labels came back from a file
+    # this session can write. Issue #52 stopped an *expired* copy from answering; a forged
+    # one is not expired.
+    issue = gh_issue_live(root, issue_no)
     if issue is None:
         # Distinct from the missing-label refusal on purpose. Both fail closed, but the
         # fix is different, and telling someone to add a label that is already on the
@@ -363,8 +363,8 @@ def missing_risk_labels(
         return (
             f"Issue #{issue_no} could not be read, so the risk label(s) it needs cannot be "
             f"confirmed and this edit is refused: {risk_evidence(matches, sorted(matches))}. "
-            "`gh` is missing, unauthenticated, offline or rate-limited, or its cached copy of "
-            f"the Issue has expired. Run `gh issue view {issue_no}` to see which, then retry."
+            "`gh` is missing, unauthenticated, offline or rate-limited. Run "
+            f"`gh issue view {issue_no}` to see which, then retry."
         )
     missing = sorted(set(matches) - label_names(issue))
     if not missing:
@@ -372,7 +372,7 @@ def missing_risk_labels(
     return (
         "Risk-sensitive paths require Issue label(s) before editing: "
         + risk_evidence(matches, missing)
-        + f". Add them to Issue #{issue_no}; the Issue is re-read after about 45 seconds."
+        + f". Add them to Issue #{issue_no}, then retry."
     )
 
 
