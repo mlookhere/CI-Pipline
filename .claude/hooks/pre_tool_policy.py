@@ -134,8 +134,18 @@ RISK_PATH_HINTS = (
 # `sed` and `perl` are verbs only when an in-place switch is present: `sed -n 1,5p ci/run`
 # reads. `install` has to be the first word of its statement, since `pip install -r
 # requirements.txt` would otherwise read as a write to the manifest it only reads.
+#
+# Not every `>` opens a file, and Issue #78 is what a naive `>>?` cost: `2>&1` points one
+# descriptor at another and writes nothing, so `cat requirements.txt 2>&1 && ...` was read as
+# a write to every token after it. `fddup` claims those spellings first -- alternation is
+# leftmost-first, so `2>&1` is taken as a duplication before the bare `>` can see it -- and
+# write_targets skips whatever it matched. The direction matters: this is the one alternative
+# whose job is to *withhold* a match, so it has to be narrow. It requires a descriptor or a
+# close (`2>&1`, `>&2`, `2>&-`) after the `&`; `>&file` and `&>file` are real writes to a
+# file in bash and stay with the redirect alternatives that follow.
 WRITE_VERBS = re.compile(
-    r">>?"
+    r"(?P<fddup>\d*>&\s*(?:\d+-?|-))"
+    r"|&>>?|\d*>>?"
     r"|\b(?:Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Remove-Item|Move-Item"
     r"|Copy-Item|Rename-Item|Set-ItemProperty|Tee-Object|tee|cp|mv|rm|ln|chmod|truncate)\b"
     r"|\bgit\s+(?:checkout|restore)\b"
@@ -143,7 +153,18 @@ WRITE_VERBS = re.compile(
     r"|(?:^|[;|&\n]\s*)install\b",
     re.I,
 )
-STATEMENT_END = re.compile(r"[;|\n]")
+# Where a verb's reach ends. `&&` and a trailing `&` end a statement as surely as `;` does,
+# and leaving them out was the other half of Issue #78: a write verb's target list ran to the
+# end of the whole chain, so `echo a > b.txt && cat ci/run` called `ci/run` a write target.
+# `||` was already covered by `|`, by its first character.
+#
+# The `&` is conditional because two of the spellings above are built from one. `tee 2>&1
+# ci/run` must not stop at the `&` inside the duplication, or the file it writes falls off the
+# end of the scan; and `&>` must not stop before the redirect it belongs to. Hence: an `&`
+# ends a statement only when it neither follows a `>` nor precedes one. The lookbehind is why
+# write_targets searches the whole command from an offset rather than a slice -- at index 0 of
+# a slice there is nothing behind to look at, and the guard silently stops guarding.
+STATEMENT_END = re.compile(r"[;|\n]|(?<!>)&(?!>)")
 
 
 def lease_conflict(
@@ -233,6 +254,39 @@ def checkout_of(path: Path) -> tuple[Path, Path] | None:
     return CHECKOUT_CACHE[key]
 
 
+def locate_path(root: Path, value: str) -> tuple[Path, str] | None:
+    """The checkout holding `value`, and `value` relative to it. See repo_relative.
+
+    Both halves are returned because both are needed and only one of them used to be. The
+    relative path answers which risk globs apply; the checkout answers which Issue is allowed
+    to carry the labels those globs require, and reading that from the session's checkout
+    instead was Issue #78's deadlock -- `./flow new` puts the work in a linked worktree and
+    leaves the session on `dev`, where no Issue exists to hold any label.
+    """
+    candidate = Path(plain_spelling(value))
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        candidate = candidate.resolve()
+        base = root.resolve()
+    except OSError:
+        return None
+    relative = contained_path(base, candidate)
+    if relative is not None:
+        return base, relative
+    here = checkout_of(candidate)
+    if not here:
+        return None
+    ours = checkout_of(base)
+    try:
+        if not ours or not os.path.samefile(here[1], ours[1]):
+            return None
+    except OSError:
+        return None
+    relative = contained_path(here[0], candidate)
+    return None if relative is None else (here[0], relative)
+
+
 def repo_relative(root: Path, value: str) -> str | None:
     """`value` as the repo-relative POSIX path the risk globs are written against.
 
@@ -253,27 +307,8 @@ def repo_relative(root: Path, value: str) -> str | None:
     None means the path belongs to no checkout of this repository -- a scratchpad, a plan
     file, an unrelated project -- and so cannot be a risk path. Callers record that.
     """
-    candidate = Path(plain_spelling(value))
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    try:
-        candidate = candidate.resolve()
-        base = root.resolve()
-    except OSError:
-        return None
-    relative = contained_path(base, candidate)
-    if relative is not None:
-        return relative
-    here = checkout_of(candidate)
-    if not here:
-        return None
-    ours = checkout_of(base)
-    try:
-        if not ours or not os.path.samefile(here[1], ours[1]):
-            return None
-    except OSError:
-        return None
-    return contained_path(here[0], candidate)
+    located = locate_path(root, value)
+    return None if located is None else located[1]
 
 
 def record_drop(root: Path, tool: str, key: str, value: str) -> None:
@@ -288,28 +323,36 @@ def record_drop(root: Path, tool: str, key: str, value: str) -> None:
     log_event(root, "PolicyPathDropped", {"tool": tool, "key": key, "path": compact(value, 200)})
 
 
-def edited_paths(root: Path, tool: str, tool_input: dict) -> list[str]:
-    """Every repository path a write tool is about to change.
+def located_paths(root: Path, tool: str, tool_input: dict) -> list[tuple[Path, str]]:
+    """Every repository path a write tool is about to change, with its owning checkout.
 
     The Edit and Write tools name their target in `file_path`, NotebookEdit in
     `notebook_path`; a patch-style command names its files in `*** Update File:` headers.
     Before Issue #52 only the header form was read, so an ordinary Edit of a risk path
     reached the risk match with an empty list and the check returned None without ever
     consulting the Issue -- fail-open on exactly the path a session uses most.
+
+    Header paths are attributed to the session's checkout because that is what they are
+    relative to; an absolute target is attributed to whichever checkout actually holds it.
     """
     if tool not in WRITE_TOOLS:
         return []
-    paths = patch_paths(str(tool_input.get("command") or ""))
+    located = [(root, path) for path in patch_paths(str(tool_input.get("command") or ""))]
     for key in ("file_path", "notebook_path"):
         value = tool_input.get(key)
         if not value:
             continue
-        relative = repo_relative(root, str(value))
-        if relative:
-            paths.append(relative)
+        found = locate_path(root, str(value))
+        if found:
+            located.append(found)
         else:
             record_drop(root, tool, key, str(value))
-    return paths
+    return located
+
+
+def edited_paths(root: Path, tool: str, tool_input: dict) -> list[str]:
+    """The repo-relative half of located_paths, for callers that only match globs."""
+    return [relative for _, relative in located_paths(root, tool, tool_input)]
 
 
 def scraped_token(token: str) -> str:
@@ -337,12 +380,21 @@ def write_targets(command: str) -> list[str]:
     its path as a named parameter in any position: `-Encoding utf8 -Path ci/run` puts a
     switch value where the path would otherwise be. Tokens beginning with `-` are switches;
     the rest are candidate paths, and a candidate that matches no risk glob costs nothing.
+
+    A descriptor duplication contributes nothing: `2>&1` is the one spelling here that looks
+    like a write and is not one, so the match is consumed and discarded rather than left for
+    the bare `>` to claim (Issue #78).
+
+    The statement end is searched in the full command from the verb's offset, never in a
+    slice of it. STATEMENT_END decides on the character before the `&`, and a slice starting
+    at that offset has none -- which would silently turn the `tee 2>&1 ci/run` guard back off.
     """
     targets: list[str] = []
     for match in WRITE_VERBS.finditer(command):
-        rest = command[match.end() :]
-        end = STATEMENT_END.search(rest)
-        for token in rest[: end.start() if end else len(rest)].split():
+        if match.group("fddup"):
+            continue
+        end = STATEMENT_END.search(command, match.end())
+        for token in command[match.end() : end.start() if end else len(command)].split():
             if not token.startswith("-"):
                 targets.append(scraped_token(token))
     return targets
@@ -411,34 +463,93 @@ def uncontrolled_change(root: Path, cfg: dict, written: list[str]) -> str | None
     )
 
 
+CHECKOUT_ISSUE_CACHE: dict[str, int | None] = {}
+
+
+def issue_of(checkout: Path, root: Path, issue_no: int | None) -> int | None:
+    """The Issue controlling `checkout`, memoised because this runs before every tool call."""
+    key = os.path.normcase(str(checkout))
+    if key == os.path.normcase(str(root)):
+        return issue_no
+    if key not in CHECKOUT_ISSUE_CACHE:
+        CHECKOUT_ISSUE_CACHE[key] = current_issue(checkout)
+    return CHECKOUT_ISSUE_CACHE[key]
+
+
+def by_checkout(pairs: list[tuple[Path, str]]) -> dict[str, tuple[Path, list[str]]]:
+    grouped: dict[str, tuple[Path, list[str]]] = {}
+    for checkout, relative in pairs:
+        entry = grouped.setdefault(os.path.normcase(str(checkout)), (checkout, []))
+        entry[1].append(relative)
+    return grouped
+
+
 def missing_risk_labels(
     root: Path, cfg: dict, tool: str, tool_input: dict, issue_no: int | None
 ) -> str | None:
+    """Reason to refuse, when a risk path is changed without the labels that path requires.
+
+    Judged once per checkout rather than once per call (Issue #78). repo_relative already
+    holds that "the checkout that matters is the one holding the file, not the one the
+    session happens to be sitting in", and resolves the path that way; resolving the
+    controlling *Issue* from the session's branch instead contradicted it, and deadlocked the
+    workflow this repository prescribes -- `./flow new` puts the work in a linked worktree
+    whose branch names the Issue, and leaves the session on `dev`, which names none.
+
+    The answer is the conjunction, never the most permissive checkout: every checkout with a
+    risk match must have an Issue carrying that match's label, and the first one that does
+    not is the refusal. Nothing here relaxes what a label means. It stays true that a branch
+    naming no Issue cannot change a risk path, and that an Issue lacking the label cannot
+    either -- and no new authority is created, because any session could already name a
+    branch `work/<n>-x` in its own checkout to be judged against Issue n.
+    """
     command = str(tool_input.get("command") or "")
-    written = edited_paths(root, tool, tool_input)
-    named: list[str] = []
+    written = located_paths(root, tool, tool_input)
+    named: list[tuple[Path, str]] = []
     if tool in COMMAND_TOOLS:
-        written += write_targets(command)
-        named = hinted_paths(command)
-    matches = risk_matches(cfg, written + named)
+        # Command tokens are relative to where the command runs, which is the session's
+        # checkout, so they are attributed there rather than resolved per token.
+        written += [(root, target) for target in write_targets(command)]
+        named = [(root, hint) for hint in hinted_paths(command)]
+    changes = by_checkout(written)
+    for key, (checkout, paths) in sorted(by_checkout(written + named).items()):
+        reason = checkout_risk_refusal(
+            root, cfg, checkout, paths, changes.get(key, (checkout, []))[1], issue_no
+        )
+        if reason:
+            return reason
+    return None
+
+
+def checkout_risk_refusal(
+    root: Path,
+    cfg: dict,
+    checkout: Path,
+    paths: list[str],
+    written: list[str],
+    issue_no: int | None,
+) -> str | None:
+    """Reason to refuse the part of this call that lands in one checkout."""
+    matches = risk_matches(cfg, paths)
     if not matches:
         return None
-    if not issue_no:
-        return uncontrolled_change(root, cfg, written)
+    controlling = issue_of(checkout, root, issue_no)
+    if not controlling:
+        return uncontrolled_change(checkout, cfg, written)
     # Live, never cached (Issue #60): cache_json keeps its answer in .git/claude/cache/,
     # which no risk glob and no permission rule covers, so the labels came back from a file
     # this session can write. Issue #52 stopped an *expired* copy from answering; a forged
     # one is not expired.
-    issue = gh_issue_live(root, issue_no)
+    issue = gh_issue_live(root, controlling)
     if issue is None:
         # Distinct from the missing-label refusal on purpose. Both fail closed, but the
         # fix is different, and telling someone to add a label that is already on the
         # Issue sends them looking in the one place the problem is not.
         return (
-            f"Issue #{issue_no} could not be read, so the risk label(s) it needs cannot be "
+            f"Issue #{controlling} could not be read, so the risk label(s) it needs cannot be "
             f"confirmed and this edit is refused: {risk_evidence(matches, sorted(matches))}. "
             "`gh` is missing, unauthenticated, offline or rate-limited. Run "
-            f"`gh issue view {issue_no}` to see which, then retry."
+            f"`gh issue view {controlling}` to see which, then retry."
         )
     missing = sorted(set(matches) - label_names(issue))
     if not missing:
@@ -446,7 +557,7 @@ def missing_risk_labels(
     return (
         "Risk-sensitive paths require Issue label(s) before editing: "
         + risk_evidence(matches, missing)
-        + f". Add them to Issue #{issue_no}, then retry."
+        + f". Add them to Issue #{controlling}, then retry."
     )
 
 
