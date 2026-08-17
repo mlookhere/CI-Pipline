@@ -78,22 +78,34 @@ def risk_matches(cfg: dict, paths: list[str]) -> dict[str, tuple[str, str]]:
     return result
 
 
-EXPLICIT_REFSPEC = re.compile(
-    r"(?i)\bgit\s+push\b(?P<rest>(?:\s+(?:-{1,2}[^\s]+|[^\s-][^\s]*))*)",
-)
+GIT_PUSH = re.compile(r"(?i)\bgit\s+push\b")
+# A token carrying either of these is a redirection, not a ref. `2>&1` survived the switch
+# filter because it starts with a digit, and reading it as a refspec is what let
+# `git push 2>&1 | tail` look like a push that named a branch.
+REDIRECTION = re.compile(r"[<>]")
 
 
 def pushed_refs(command: str) -> list[str]:
     """The refs a `git push` names, or [] when it names none and would push the current one.
 
-    Everything that is not a switch, minus the remote, which is the first such word. `HEAD`
-    counts as naming nothing: what it resolves to cannot be read out of the command text, so
-    it has to be judged as if no refspec were given (Issue #87).
+    Everything in the push's own statement that is not a switch and not a redirection, minus
+    the remote, which is the first such word.
+
+    Bounded at the statement end for the reason Issue #78 records: without it, `git push |
+    tee out.log` reads `tee` as a remote and `out.log` as a ref, so a bare push acquires an
+    imaginary refspec and stops being judged as bare. This direction of the mistake is the
+    dangerous one -- it allows rather than refuses -- which is why the scan is narrowed to
+    the statement rather than the whole command line.
+
+    `HEAD` counts as naming nothing: what it resolves to cannot be read out of the command
+    text, so it has to be judged as if no refspec were given (Issue #87).
     """
-    match = EXPLICIT_REFSPEC.search(command)
+    match = GIT_PUSH.search(command)
     if not match:
         return []
-    words = [word for word in match.group("rest").split() if not word.startswith("-")]
+    end = STATEMENT_END.search(command, match.end())
+    statement = command[match.end() : end.start() if end else len(command)]
+    words = [word for word in statement.split() if not word.startswith("-") and not REDIRECTION.search(word)]
     refs = [word for word in words[1:] if word.upper() != "HEAD"]
     return refs if len(words) > 1 else []
 

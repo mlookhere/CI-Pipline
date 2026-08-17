@@ -1103,6 +1103,14 @@ PUSHES_THAT_MUST_BE_REFUSED = [
     # not say which branch it resolves to, so it is judged as if no refspec were given.
     pytest.param("git push origin HEAD", "dev", id="head-from-integration"),
     pytest.param("git push -u origin HEAD", "master", id="head-with-upstream-from-production"),
+    # A bare push does not stop being bare because something was piped or redirected after
+    # it. Each of these was allowed by the first cut of this fix: the shell operators
+    # survived the switch filter and were read as a remote and a ref.
+    pytest.param("git push | tee out.log", "dev", id="bare-push-into-a-pipe"),
+    pytest.param("git push --dry-run 2>&1 | tail -2", "dev", id="bare-push-with-stderr-merged"),
+    pytest.param("git push > push.log", "dev", id="bare-push-redirected-to-a-file"),
+    pytest.param("git push && echo done", "dev", id="bare-push-then-another-statement"),
+    pytest.param("git push; echo done", "master", id="bare-push-before-a-semicolon"),
 ]
 
 
@@ -1122,6 +1130,10 @@ PUSHES_THAT_MUST_BE_ALLOWED = [
     pytest.param("git push origin work/52-x:work/52-x", "dev", id="explicit-colon-refspec"),
     pytest.param("git push", "work/52-x", id="bare-push-from-a-task-branch"),
     pytest.param("git push --tags origin work/52-x", "dev", id="switch-before-the-remote"),
+    # The narrowing above must not swallow a real refspec that happens to be followed by a
+    # redirection, which is how this session actually invokes git.
+    pytest.param("git push origin work/52-x 2>&1 | tail -2", "dev", id="real-refspec-then-a-pipe"),
+    pytest.param("git push origin work/52-x > push.log", "dev", id="real-refspec-then-a-file"),
 ]
 
 
