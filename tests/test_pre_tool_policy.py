@@ -933,3 +933,151 @@ def test_the_real_entry_point_allows_a_powershell_command_that_writes_nothing(tm
     root = build_checkout(tmp_path)
     payload = run_entry_point(root, powershell_event(root, "./ci/run fast"))
     assert decision(payload) == "allow"
+
+
+# Issue #78. Two spellings of the same mistake: asking the wrong thing who owns a change.
+# Both erred toward over-refusal, so the risk in fixing them is losing a refusal, and every
+# case below that asserts DENY is there to pin one that must not be lost.
+
+REDIRECTS_THAT_WRITE_NOTHING = [
+    pytest.param("cat ci/run 2>&1", id="stderr-onto-stdout"),
+    pytest.param("cat ci/run 2>&1 | head -1", id="duplication-then-a-pipe"),
+    pytest.param(
+        'echo "a" && cat .github/workflows/ci-pr.yml 2>&1 && echo "b" && cat ci/run 2>&1',
+        id="the-issue-78-reproduction",
+    ),
+    pytest.param("./ci/run fast 2>&1 && ./ci/run pr 2>&1", id="both-gates-with-stderr-merged"),
+    pytest.param("git diff ci/run 2>&-", id="closing-a-descriptor"),
+    pytest.param("grep -rn secret .claude/hooks 2>&1 && echo done", id="grep-then-echo"),
+]
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize("command", REDIRECTS_THAT_WRITE_NOTHING)
+def test_a_descriptor_duplication_is_not_a_write(root, monkeypatch, real_cfg, tool, command):
+    """`2>&1` points one descriptor at another. It opens no file and writes to none.
+
+    Reading its `>` as a redirect, and then scanning to the end of the whole `&&` chain for
+    targets, made every token after it a file this command was about to change -- which
+    refused the ordinary diagnostic commands this repository's own instructions ask for.
+
+    Judged from an Issue-less branch, which is where the bug was met and the only place a
+    command that merely *names* a risk path is allowed to run at all.
+    """
+
+    def explode(*_, **__):
+        raise AssertionError(f"a redirect that writes nothing must not need a label: {command}")
+
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
+    assert pre_tool_policy.missing_risk_labels(root, real_cfg, tool, {"command": command}, None) is None
+
+
+REDIRECTS_THAT_DO_WRITE = [
+    # The three cases the differential corpus could not see, because none of its 42 commands
+    # combines a duplication with a write. Each is a refusal a careless narrowing loses.
+    pytest.param("tee 2>&1 ci/run", id="a-duplication-before-the-file-tee-writes"),
+    pytest.param("echo x >& ci/run", id="both-streams-to-a-file-posix-spelling"),
+    pytest.param("echo x &> ci/run", id="both-streams-to-a-file-bash-spelling"),
+    pytest.param("echo x &>> ci/run", id="both-streams-appended-to-a-file"),
+    pytest.param("cat foo 2>&1 && echo x > ci/run", id="a-real-write-after-a-duplication"),
+    pytest.param("echo x > ci/run 2>&1", id="a-real-write-with-stderr-merged-after-it"),
+    pytest.param("sleep 1 & echo x > ci/run", id="a-real-write-after-a-backgrounded-job"),
+]
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize("command", REDIRECTS_THAT_DO_WRITE)
+def test_a_redirect_that_does_open_a_file_still_needs_the_label(root, monkeypatch, real_cfg, tool, command):
+    """`>&file` and `&>file` write to a file; only `>&N` and `>&-` do not."""
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("type:bug"))
+    reason = pre_tool_policy.missing_risk_labels(root, real_cfg, tool, {"command": command}, 52)
+    assert reason is not None, command
+    assert "risk:ci" in reason
+
+
+def test_a_write_verb_reaches_only_to_the_end_of_its_own_statement(root, monkeypatch, real_cfg):
+    """`&&` ends a statement as surely as `;` does, and used not to end the target scan.
+
+    The write is to a path no glob matches, so the only way this call can want a label is by
+    carrying `ci/run` -- named by the *next* statement -- into the first statement's targets.
+    """
+
+    def explode(*_, **__):
+        raise AssertionError("a write to b.txt must not be judged against the next statement")
+
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
+    command = "echo a > b.txt && ./ci/run fast"
+    assert pre_tool_policy.missing_risk_labels(root, real_cfg, "Bash", {"command": command}, 52) is None
+
+
+def _worktree_pair(tmp_path, branch_name):
+    """A main checkout on `dev` and a linked worktree on `branch_name`, as ./flow new makes."""
+    main = make_repo(tmp_path / "main", "dev")
+    (main / "seed.txt").write_text("seed\n", encoding="utf-8")
+    git_fixture(main, "add", "seed.txt")
+    git_fixture(main, "commit", "-q", "-m", "seed")
+    sibling = tmp_path / "sibling"
+    git_fixture(main, "worktree", "add", "-q", "-b", branch_name, str(sibling))
+    target = sibling / ".github" / "workflows" / "ci-pr.yml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("name: ci\n", encoding="utf-8")
+    return main, target
+
+
+def test_the_worktrees_own_issue_answers_for_a_file_inside_it(tmp_path, monkeypatch):
+    """Issue #78's deadlock: ./flow new leaves the session on `dev` and the work elsewhere.
+
+    repo_relative already holds that the checkout that matters is the one holding the file.
+    Resolving the *path* that way while resolving the controlling *Issue* from the session's
+    branch made the prescribed workflow unable to edit the repository's own risk paths --
+    including this hook, so the fix could not be applied from where the session sits either.
+    """
+    pre_tool_policy.CHECKOUT_ISSUE_CACHE.clear()
+    main, target = _worktree_pair(tmp_path, "work/78-sibling")
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("risk:ci"))
+    reason = pre_tool_policy.missing_risk_labels(main, CFG, "Edit", {"file_path": str(target)}, None)
+    assert reason is None
+
+
+def test_the_worktrees_own_issue_is_still_required_to_carry_the_label(tmp_path, monkeypatch):
+    """Which Issue answers changed. Whether one has to carry the label did not."""
+    pre_tool_policy.CHECKOUT_ISSUE_CACHE.clear()
+    main, target = _worktree_pair(tmp_path, "work/78-sibling")
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("type:bug"))
+    reason = pre_tool_policy.missing_risk_labels(main, CFG, "Edit", {"file_path": str(target)}, None)
+    assert reason is not None
+    assert "risk:ci" in reason
+    assert "#78" in reason
+
+
+def test_a_worktree_on_a_branch_naming_no_issue_is_still_refused(tmp_path, monkeypatch):
+    """A second checkout is not a way to escape needing an Issue at all."""
+    pre_tool_policy.CHECKOUT_ISSUE_CACHE.clear()
+    main, target = _worktree_pair(tmp_path, "spike/no-issue")
+
+    def explode(*_, **__):
+        raise AssertionError("a branch naming no Issue has no Issue to consult")
+
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
+    reason = pre_tool_policy.missing_risk_labels(main, CFG, "Edit", {"file_path": str(target)}, None)
+    assert reason is not None
+    assert "spike/no-issue" in reason
+
+
+def test_a_command_token_is_judged_against_the_session_not_a_sibling(tmp_path, monkeypatch):
+    """A relative token in a command is relative to where the command runs, and nowhere else.
+
+    Otherwise a session on `dev` could reach a sibling worktree's Issue by naming a bare
+    `ci/run`, which belongs to whichever checkout the shell is standing in.
+    """
+    pre_tool_policy.CHECKOUT_ISSUE_CACHE.clear()
+    main, _ = _worktree_pair(tmp_path, "work/78-sibling")
+
+    def explode(*_, **__):
+        raise AssertionError("a command token must not borrow a sibling worktree's Issue")
+
+    monkeypatch.setattr(pre_tool_policy, "gh_issue_live", explode)
+    command = "echo x > .github/workflows/ci-pr.yml"
+    reason = pre_tool_policy.missing_risk_labels(main, CFG, "Bash", {"command": command}, None)
+    assert reason is not None
+    assert "'dev' names none" in reason
