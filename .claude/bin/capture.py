@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "workflow"))
 
 # E402 is suppressed for that reason alone -- the import cannot resolve until sys.path is
 # extended above. Same pattern as ci/run.py and tests/test_workflow_policy.py.
-from bash_tools import bash_command  # noqa: E402
+from bash_tools import bash_command, use_utf8_streams  # noqa: E402
 
 SENSITIVE_ENV = re.compile(
     r"(?i)(?:key|secret|token|password|passwd|cookie|credential|auth)|^(?:AWS|AZURE|GOOGLE|GITHUB|OPENAI)_"
@@ -73,6 +73,15 @@ def prune(logs: Path, *, days: int, max_bytes: int, max_files: int) -> None:
 
 
 def main() -> int:
+    # Before anything that can write to a stream, including argparse's usage errors and any
+    # traceback out of `raise SystemExit(main())`. The child is decoded generously below and
+    # the log file is written as UTF-8, but stdout here is a pipe, so Python encodes it with
+    # the locale codec: on Windows a cp1252 that cannot carry the byte-order mark opening
+    # every GitHub Actions job log line, nor the U+FFFD left by errors="replace". The result
+    # was that a command which had already succeeded reported as a traceback, because the
+    # wrapper died while reporting it -- and the summary naming the log file died with it,
+    # so the output was not merely truncated but unreachable (Issue #77).
+    use_utf8_streams()
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoded", required=True)
     parser.add_argument("--head", type=int, default=60)

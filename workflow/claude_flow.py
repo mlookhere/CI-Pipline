@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 from urllib.parse import quote
 
-from bash_tools import bash_command
+from bash_tools import bash_command, use_utf8_streams
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / ".claude-workflow.json"
@@ -33,26 +33,6 @@ REQUIRED_STATE_HEADINGS = [
     "## Next exact actions",
     "## Working references",
 ]
-
-
-def use_utf8_streams() -> None:
-    """Encode what this process prints as UTF-8 whatever codec the interpreter picked.
-
-    `output()` already decodes gh as UTF-8; the loss is on the way back out. When stdout is
-    a pipe Python encodes it with the locale codec -- cp1252 on Windows -- so the arrow in
-    control Issue #12 killed `./flow start` before it could print the acceptance criteria
-    it exists to show (Issue #67). Every subcommand prints captured gh output, so the two
-    streams are fixed once at the process boundary rather than at each print. A stream that
-    is already UTF-8 (any Linux runner, a Windows console) is unchanged by this, and a
-    stream that cannot be reconfigured at all -- no console, a plain StringIO -- is left
-    alone. backslashreplace over the default strict so that a character UTF-8 cannot carry,
-    a lone surrogate out of a filesystem path, stays legible in the output instead of
-    aborting the briefing.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def shell(

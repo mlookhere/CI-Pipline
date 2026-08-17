@@ -11,6 +11,14 @@ against: a name on PATH that resolves to something which cannot do the job. The 
 applies -- do not trust the name, run the candidate and check it behaves. Here the property
 that matters is environment propagation, so that is what gets probed rather than trying to
 recognise WSL by its path (Issue #35).
+
+The module also carries `use_utf8_streams()`, which has nothing to do with resolving bash.
+It lives here because this is the leaf of the workflow import graph: it depends on nothing
+in this repository, so every entry point can import it without risking a cycle, and two of
+the three that print captured output already import it for `bash_command()`. A module of
+its own would be a fourth file holding nine lines, and a copy per entry point is precisely
+how the copies drift out of step -- which is what Issue #77 was, the fix for Issue #67
+never having reached the capture wrapper.
 """
 
 from __future__ import annotations
@@ -18,6 +26,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 PROBE_VARIABLE = "CLAUDE_BASH_PROBE"
@@ -101,3 +110,28 @@ def bash_command() -> str:
                 "CLAUDE_BASH to a bash that can."
             )
     return _RESOLVED
+
+
+def use_utf8_streams() -> None:
+    """Encode what this process prints as UTF-8 whatever codec the interpreter picked.
+
+    `claude_flow.output()` already decodes gh as UTF-8; the loss is on the way back out.
+    When stdout is a pipe Python encodes it with the locale codec -- cp1252 on Windows --
+    so the arrow in control Issue #12 killed `./flow start` before it could print the
+    acceptance criteria it exists to show (Issue #67). The capture wrapper had the same
+    hole and a worse blast radius: every GitHub Actions job log line opens with a
+    byte-order mark, and every byte the wrapper could not decode is already a U+FFFD by
+    the time it is printed, neither of which cp1252 can encode. So reading a job log
+    through the wrapper replaced a command's real result with a traceback raised by the
+    reporting code itself (Issue #77). Every subcommand prints captured gh output, so the
+    two streams are fixed once at the process boundary rather than at each print. A stream
+    that is already UTF-8 (any Linux runner, a Windows console) is unchanged by this, and a
+    stream that cannot be reconfigured at all -- no console, a plain StringIO -- is left
+    alone. backslashreplace over the default strict so that a character UTF-8 cannot carry,
+    a lone surrogate out of a filesystem path, stays legible in the output instead of
+    aborting the briefing.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")

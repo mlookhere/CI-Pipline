@@ -9,6 +9,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from bash_tools import use_utf8_streams
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -121,6 +123,13 @@ def print_report(report: dict[str, Any], usage: Counter[str]) -> None:
 
 
 def main() -> int:
+    # `flow metrics` re-execs this file as a fresh child interpreter (claude_flow.cmd_metrics),
+    # so the parent's reconfigure never reaches it and this process starts on the locale codec
+    # again. `print_report()` opens with an em dash, which cp1252 happens to carry but an OEM
+    # console codepage such as cp437 does not, and the hook event and policy decision names
+    # below it come out of telemetry, where nothing constrains the characters at all. Fixed
+    # at the same boundary the other two entry points use, for the same reason (Issue #77).
+    use_utf8_streams()
     parser = argparse.ArgumentParser(
         description="Summarize local Claude Code workflow efficiency and evidence."
     )
