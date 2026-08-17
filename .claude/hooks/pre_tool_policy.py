@@ -78,13 +78,54 @@ def risk_matches(cfg: dict, paths: list[str]) -> dict[str, tuple[str, str]]:
     return result
 
 
-def protected_push(root: Path, command: str) -> bool:
+EXPLICIT_REFSPEC = re.compile(
+    r"(?i)\bgit\s+push\b(?P<rest>(?:\s+(?:-{1,2}[^\s]+|[^\s-][^\s]*))*)",
+)
+
+
+def pushed_refs(command: str) -> list[str]:
+    """The refs a `git push` names, or [] when it names none and would push the current one.
+
+    Everything that is not a switch, minus the remote, which is the first such word. `HEAD`
+    counts as naming nothing: what it resolves to cannot be read out of the command text, so
+    it has to be judged as if no refspec were given (Issue #87).
+    """
+    match = EXPLICIT_REFSPEC.search(command)
+    if not match:
+        return []
+    words = [word for word in match.group("rest").split() if not word.startswith("-")]
+    refs = [word for word in words[1:] if word.upper() != "HEAD"]
+    return refs if len(words) > 1 else []
+
+
+def protected_push(root: Path, command: str) -> str | None:
+    """Why this push is refused, or None.
+
+    Two different prohibitions, kept apart because they have different fixes and the reader
+    needs to know which one they hit (Issue #87). Naming `dev` or `master` as the destination
+    is refused from anywhere. Giving no refspec at all is refused only while the session's
+    own branch is protected, since that -- and only that -- is when a bare `git push` pushes
+    a protected branch.
+
+    Reading `branch(root)` first was the bug: `./flow new` leaves the session on `dev` by
+    design, so that test was true in every ordinary session and refused every hand push of a
+    task branch, with a message naming a prohibition the command did not violate. It is the
+    same mistake Issue #78 fixed for risk labels -- the wrong checkout answering -- in the
+    one place #78 did not reach.
+    """
     branches = list(config(root).get("branches", {}).values()) or ["main", "master", "dev"]
     if not re.search(r"(?i)\bgit\s+push\b", command):
-        return False
-    if branch(root) in branches:
-        return True
-    return any(re.search(rf"(?:\s|:){re.escape(name)}(?:\s|$)", command) for name in branches)
+        return None
+    named = pushed_refs(command)
+    if any(re.search(rf"(?:\s|:){re.escape(name)}(?:\s|$)", command) for name in branches):
+        return "Direct pushes to integration or production branches are prohibited; use a pull request."
+    if not named and branch(root) in branches:
+        return (
+            f"This push names no branch, so it would push {branch(root)!r}, which is an "
+            "integration or production branch. Push the task branch by name, or open a pull "
+            "request."
+        )
+    return None
 
 
 def deny(root: Path, event: dict, issue_no: int | None, reason: str, category: str) -> None:
@@ -187,9 +228,7 @@ def command_violation(root: Path, command: str) -> str | None:
     for pattern, reason in DENY:
         if re.search(pattern, command, re.I):
             return reason
-    if protected_push(root, command):
-        return "Direct pushes to integration or production branches are prohibited; use a pull request."
-    return None
+    return protected_push(root, command)
 
 
 def plain_spelling(value: str) -> str:
