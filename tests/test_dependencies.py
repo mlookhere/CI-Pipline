@@ -16,6 +16,7 @@ import re
 import sys
 import tarfile
 import zipfile
+from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
@@ -25,12 +26,15 @@ sys.path.insert(0, str(ROOT / "workflow"))
 
 from check_dependencies import (  # noqa: E402
     DELEGATION,
+    PACKAGED_ASSETS,
     check_artifacts,
     check_audit_target,
     check_no_chroma_server_client,
+    check_packaged_assets,
     check_pyproject,
     check_requirements,
     compare,
+    main,
     normalise,
     quoted,
     sections,
@@ -225,7 +229,13 @@ def test_the_check_runs_on_the_fast_stage():
     assert any("check_dependencies.py" in c for c in config["commands"]["dependency_sync"])
 
 
-def _distributions(directory: Path, *, requirements: bool = True, requires: list[str] | None = None):
+def _distributions(
+    directory: Path,
+    *,
+    requirements: bool = True,
+    requires: list[str] | None = None,
+    assets: bool = True,
+):
     """A minimal sdist and wheel pair, shaped like the real ones."""
     entries = ["fastapi>=0.110", "httpx>=0.27"] if requires is None else requires
     metadata = "Metadata-Version: 2.1\nName: demo\nVersion: 0.1.0\n" + "".join(
@@ -238,12 +248,18 @@ def _distributions(directory: Path, *, requirements: bool = True, requires: list
     payload.write_text(metadata, encoding="utf-8")
     with tarfile.open(directory / "demo-0.1.0.tar.gz", "w:gz") as archive:
         archive.add(payload, arcname="demo-0.1.0/PKG-INFO")
+        if assets:
+            for asset in PACKAGED_ASSETS:
+                archive.add(payload, arcname=f"demo-0.1.0/{asset}")
         if requirements:
             source = directory / "requirements.txt"
             source.write_text("fastapi>=0.110\nhttpx>=0.27\n", encoding="utf-8")
             archive.add(source, arcname="demo-0.1.0/requirements.txt")
     with zipfile.ZipFile(directory / "demo-0.1.0-py3-none-any.whl", "w") as wheel:
         wheel.writestr("demo-0.1.0.dist-info/METADATA", metadata)
+        if assets:
+            for asset in PACKAGED_ASSETS:
+                wheel.writestr(asset, "<!doctype html>")
     return ["fastapi>=0.110", "httpx>=0.27"]
 
 
@@ -595,3 +611,58 @@ def test_no_gating_stage_uses_the_advisory_config():
         )
     }
     assert using == {"typed-advisory"}, using
+
+
+def test_distributions_that_ship_the_ui_pass(tmp_path):
+    _distributions(tmp_path / "dist")
+    assert check_packaged_assets(tmp_path / "dist") == []
+
+
+def test_a_wheel_without_the_ui_is_rejected(tmp_path):
+    """The shipped failure: every API route answers and GET / returns a 500 (Issue #55)."""
+    _distributions(tmp_path / "dist", assets=False)
+    failures = check_packaged_assets(tmp_path / "dist")
+    assert any(f"{PACKAGED_ASSETS[0]}" in failure and "500" in failure for failure in failures)
+
+
+def test_a_source_distribution_without_the_ui_is_rejected(tmp_path):
+    """A wheel is only ever as complete as the sdist a rebuild would start from."""
+    _distributions(tmp_path / "dist", assets=False)
+    failures = check_packaged_assets(tmp_path / "dist")
+    assert any("would ship without it" in failure for failure in failures)
+
+
+def test_the_asset_check_reports_a_directory_with_nothing_to_read(tmp_path):
+    """Nothing to inspect is a failure, not a pass: a vacuous check reads as a green gate."""
+    (tmp_path / "dist").mkdir()
+    assert check_packaged_assets(tmp_path / "dist") != []
+
+
+def test_the_artifacts_flag_runs_the_asset_check(tmp_path, monkeypatch, capsys):
+    """Wiring, not logic: a check nothing invokes verifies nothing, and looks identical."""
+    _distributions(tmp_path / "dist", assets=False)
+    monkeypatch.setattr(sys, "argv", ["check_dependencies.py", "--artifacts", str(tmp_path / "dist")])
+    assert main() == 1
+    assert f"does not contain {PACKAGED_ASSETS[0]}" in capsys.readouterr().out
+
+
+def test_every_packaged_asset_is_in_the_repository():
+    """The list is only worth checking against artifacts while it names real files."""
+    for asset in PACKAGED_ASSETS:
+        assert (ROOT / asset).is_file(), f"{asset} is declared as package data but not present"
+
+
+def test_the_ui_is_declared_as_package_data():
+    """setuptools packages modules; data files reach a distribution only when declared.
+
+    Caught here as well as in the artifact check, because the artifact check needs a build
+    and this is the line whose removal empties it.
+    """
+    table = sections(PYPROJECT).get("tool.setuptools.package-data", "")
+    declarations = " ".join(line.split("#")[0] for line in table.splitlines())
+    patterns = quoted(declarations)
+    package, _, relative = PACKAGED_ASSETS[0].partition("/")
+    assert package in table, f"{package} declares no package data"
+    assert any(fnmatch(relative, pattern) for pattern in patterns), (
+        f"no declared pattern in {patterns} covers {relative}"
+    )

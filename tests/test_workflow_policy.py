@@ -22,6 +22,7 @@ from check_workflow_policy import (  # noqa: E402
     check_closure_concurrency_text,
     check_dependabot,
     check_dependabot_text,
+    check_privileged_inline_script_text,
     concurrency_block,
     group_of,
     integration_branch,
@@ -250,9 +251,10 @@ def test_the_real_sync_control_workflow_satisfies_the_rule():
 
 # The publisher is the privileged half of the advisory review: `pull-requests: write`
 # and a comment on the pull request, reachable only through the Claude job's success.
-# Two independent properties have to hold, and a rule phrased as "inspect your
-# dependency properly" pins neither -- a condition that stops inspecting the dependency
-# leaves the write-scoped job wide open while looking tidier than the one it replaced.
+# Three independent properties have to hold -- when it runs, whether a cancellation stops
+# it, and what builds the body it posts -- and a rule phrased as "inspect your dependency
+# properly" pins none of them: a condition that stops inspecting the dependency leaves the
+# write-scoped job wide open while looking tidier than the one it replaced.
 PUBLISHER = """name: Optional Claude advisory review
 
 on:
@@ -283,8 +285,16 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - run: echo publish
+      - name: Validate and render review
+        env:
+          REVIEW_JSON: ${{ needs.review.outputs.review_json }}
+        run: >-
+          python3 workflow/render_claude_review.py
+          --artifact /tmp/claude-review.json --comment /tmp/comment.md
+      - run: gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md
 """
+
+COMMENT_STEP = '      - run: gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md'
 
 PUBLISHER_CONDITION = (
     "    if: ${{ !cancelled() && needs.review.result == 'success' "
@@ -312,8 +322,9 @@ def test_a_folded_condition_is_read_whole():
 def test_a_steps_own_condition_is_not_read_as_the_jobs():
     """A step's `if:` sits deeper; reading it as the job's would wave the defect through."""
     text = _publisher("").replace(
-        "      - run: echo publish",
-        "      - if: ${{ !cancelled() && needs.review.result == 'success' }}\n        run: echo publish",
+        COMMENT_STEP,
+        "      - if: ${{ !cancelled() && needs.review.result == 'success' }}\n"
+        '        run: gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md',
     )
     assert job_if(dict(job_blocks(text))["publish"]) is None
 
@@ -391,18 +402,12 @@ def test_a_flow_mapping_job_fails_closed():
     Written as a flow mapping, `publish` is absorbed into the job above it, so the
     write permission and the condition both leave the reader's view.
     """
-    text = PUBLISHER.replace(
-        "  publish:\n"
-        "    needs: review\n"
-        f"{PUBLISHER_CONDITION}"
-        "    runs-on: ubuntu-latest\n"
-        "    permissions:\n"
-        "      contents: read\n"
-        "      pull-requests: write\n"
-        "    steps:\n"
-        "      - run: echo publish\n",
+    # Sliced at the job heading rather than replacing the block verbatim: the steps this
+    # publisher runs are load-bearing elsewhere in this file and will keep changing, and a
+    # stale copy of them here would turn this test into a silent no-op.
+    text = PUBLISHER[: PUBLISHER.index("  publish:")] + (
         '  publish: {needs: review, if: "${{ always() }}", runs-on: ubuntu-latest, '
-        "permissions: {pull-requests: write}, steps: [{run: echo publish}]}\n",
+        "permissions: {pull-requests: write}, steps: [{run: echo publish}]}\n"
     )
     assert text != PUBLISHER, "fixture replacement did not apply"
     failures = check_claude_publisher_gate_text(text, "claude-review.yml")
@@ -429,6 +434,74 @@ def test_every_workflow_in_the_repository_satisfies_the_publisher_rule():
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
         text = path.read_text(encoding="utf-8")
         assert check_claude_publisher_gate_text(text, path.name) == [], path.name
+
+
+# Issue #41: the publisher used to render the comment from an unvalidated heredoc. Two
+# rules replace it, and they fail for different reasons -- one that the body is built by
+# the reviewed renderer, one that no privileged job runs code no gate can read. Either
+# alone leaves a way back: a heredoc that also mentions the renderer, or a call to some
+# other script that never validates anything.
+INLINE_RENDER = (
+    "      - name: Validate and render review\n"
+    "        run: |\n"
+    "          python3 - <<'PY2'\n"
+    "          import json, os\n"
+    "          print(json.loads(os.environ['REVIEW_JSON'])['summary'])\n"
+    "          PY2\n"
+)
+
+
+def test_a_publisher_that_stops_using_the_renderer_is_rejected():
+    text = PUBLISHER.replace("python3 workflow/render_claude_review.py\n", "python3 workflow/other.py\n")
+    assert text != PUBLISHER, "fixture replacement did not apply"
+    failures = check_claude_publisher_gate_text(text, "claude-review.yml")
+    assert len(failures) == 1
+    assert "render_claude_review.py" in failures[0]
+    assert "'publish'" in failures[0]
+
+
+def test_a_job_that_posts_no_comment_is_not_asked_to_render_one():
+    """The rule is about the comment body, not about every write-scoped job downstream."""
+    text = PUBLISHER.replace(COMMENT_STEP, "      - run: gh pr edit --add-label reviewed")
+    assert text != PUBLISHER, "fixture replacement did not apply"
+    assert check_claude_publisher_gate_text(text, "claude-review.yml") == []
+
+
+def test_a_heredoc_in_a_write_scoped_job_is_rejected():
+    """The exact shape this Issue removed, including one that still names the renderer."""
+    text = PUBLISHER.replace(COMMENT_STEP, INLINE_RENDER + COMMENT_STEP)
+    assert text != PUBLISHER, "fixture replacement did not apply"
+    failures = check_privileged_inline_script_text(text, "claude-review.yml")
+    assert len(failures) == 1
+    assert "'publish'" in failures[0]
+    assert "interpreter on stdin" in failures[0]
+
+
+def test_a_read_only_job_may_still_build_a_script_inline():
+    """Privilege is what makes unreadable code dangerous; a read-only job is not the target."""
+    text = PUBLISHER.replace("      pull-requests: write", "      pull-requests: read").replace(
+        COMMENT_STEP, INLINE_RENDER + COMMENT_STEP
+    )
+    assert check_privileged_inline_script_text(text, "claude-review.yml") == []
+
+
+def test_a_shell_flag_is_not_mistaken_for_a_stdin_program():
+    """`bash -c` and `--` are ordinary arguments; only a lone `-` reads a program."""
+    text = PUBLISHER.replace(COMMENT_STEP, '      - run: bash -c "gh pr comment -- --body-file x"')
+    assert check_privileged_inline_script_text(text, "claude-review.yml") == []
+
+
+def test_the_real_claude_review_publisher_renders_through_the_script():
+    text = (WORKFLOWS / "claude-review.yml").read_text(encoding="utf-8")
+    assert "pull-requests: write" in text, "test is pinned to the wrong file"
+    assert "workflow/render_claude_review.py" in text
+    assert check_privileged_inline_script_text(text, "claude-review.yml") == []
+
+
+def test_no_workflow_runs_privileged_code_a_gate_cannot_read():
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        text = path.read_text(encoding="utf-8")
+        assert check_privileged_inline_script_text(text, path.name) == [], path.name
 
 
 # Acceptance criterion 3 of Issue #31: the security posture of this workflow must not
