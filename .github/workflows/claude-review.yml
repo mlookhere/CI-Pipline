@@ -71,25 +71,18 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      # The envelope is model output steered by pull-request diff text, and the schema on
+      # the `review` job is enforced by the action rather than by this job, so the renderer
+      # revalidates every field and contains the text before it reaches markdown. It lives
+      # in workflow/ rather than in a heredoc so the fast gate, the linter, the type checker
+      # and tests all read it; `check_workflow_policy.py` holds both halves of that.
       - name: Validate and render review
         env:
           REVIEW_JSON: ${{ needs.review.outputs.review_json }}
-        run: |
-          python3 - <<'PY2'
-          import json, os, pathlib
-          data=json.loads(os.environ['REVIEW_JSON'])
-          required={'summary','findings','needs_human_review'}
-          if set(data)!=required or not isinstance(data['findings'],list) or len(data['findings'])>20:
-              raise SystemExit('invalid review envelope')
-          pathlib.Path('/tmp/claude-review.json').write_text(json.dumps(data,indent=2)+'\n')
-          with pathlib.Path('/tmp/comment.md').open('w') as out:
-              out.write('## Claude advisory review\n\n> Advisory only. Deterministic CI and human review remain authoritative.\n\n')
-              out.write(data['summary']+'\n')
-              for f in data['findings']:
-                  where=f"{f['path']}:{f['line']}" if f.get('line') else f['path']
-                  out.write(f"\n### [{f['severity'].upper()}] {f['title']}\n\n**Location:** `{where}`\n\n{f['evidence']}\n\n**Recommendation:** {f['recommendation']}\n")
-              if data['needs_human_review']: out.write('\n**Human review requested by Claude.**\n')
-          PY2
+        run: >-
+          python3 workflow/render_claude_review.py
+          --artifact /tmp/claude-review.json
+          --comment /tmp/comment.md
       - uses: actions/upload-artifact@v7
         with:
           name: claude-review-${{ github.run_id }}

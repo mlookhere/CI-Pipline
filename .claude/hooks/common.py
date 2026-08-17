@@ -26,6 +26,37 @@ SECRET_PATTERNS = {
     ),
 }
 
+# The tools that hand a shell a command line, under the key that command line arrives in.
+# Both send it as `command`; that is read off this project's own session transcripts rather
+# than assumed from Bash, because a payload key the hook guesses wrong reads as an empty
+# command and passes every check (Issue #52's failure, one tool along).
+#
+# `PowerShell` is likewise the name Claude Code actually sends for the tool that
+# CLAUDE_CODE_USE_POWERSHELL_TOOL enables, not a spelling inferred from that variable.
+# Until Issue #59 it matched no hook matcher, so none of the command policy applied to it
+# -- and with branch protection returning 403 on this plan (Issue #12) these hooks are the
+# only enforcement, so a tool outside the matcher removes the control rather than
+# degrading it.
+COMMAND_TOOLS = {"Bash", "PowerShell"}
+
+# The tools that name a repository file in their own arguments. .claude/settings.json
+# registers the policy hooks for `mcp__.*` too, and that is deliberately wider than this
+# set: an MCP call still reaches the lease and telemetry paths. It is not listed here
+# because no MCP server is configured for this repository -- there is no .mcp.json and
+# `mcpServers` is empty for this project -- and every MCP tool reachable in the session
+# writes to a remote service or a browser, never to the checkout. An MCP tool that does
+# write files would name its target under some server-defined key, not `file_path`, so
+# listing one here without also reading its key would look like coverage while checking
+# nothing.
+WRITE_TOOLS = {"Edit", "Write", "NotebookEdit"}
+
+# The matcher those two sets imply, for every settings event that gates a policy hook.
+# Claude Code reads .claude/settings.json as data and cannot compute a matcher from this
+# module, so the literal string in that file is the second copy this repository cannot
+# avoid having; workflow/self_test.py fails when the two disagree, which is what keeps this
+# definition authoritative instead of merely first.
+POLICY_MATCHER = "|".join([*sorted(COMMAND_TOOLS | WRITE_TOOLS), "mcp__.*"])
+
 
 def run(args: list[str], *, cwd: Path | None = None, timeout: int = 8) -> subprocess.CompletedProcess[str]:
     try:
@@ -135,7 +166,16 @@ def changed_files(root: Path) -> list[str]:
     return sorted(names)
 
 
-def cache_json(root: Path, key: str, command: list[str], ttl: int = 60) -> Any:
+def cache_json(root: Path, key: str, command: list[str], ttl: int = 60, *, allow_stale: bool = True) -> Any:
+    """The command's JSON output, from cache while it is inside `ttl`.
+
+    `allow_stale` decides what happens when the command then fails -- `gh` absent,
+    unauthenticated, offline, rate-limited. Serving the expired copy is right for a caller
+    that would rather show something slightly old than nothing, which is what session
+    context and the compaction summary want. It is wrong for a caller deciding whether to
+    permit something: answering that from a copy already declared too old is fail-open
+    however the refusal text is worded, so those callers pass False and get None.
+    """
     cache = state_dir(root) / "cache" / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
     now = time.time()
     try:
@@ -152,18 +192,21 @@ def cache_json(root: Path, key: str, command: list[str], ttl: int = 60) -> Any:
             return value
         except json.JSONDecodeError:
             pass
+    if not allow_stale:
+        return None
     try:
         return json.loads(cache.read_text(encoding="utf-8")).get("value")
     except (OSError, json.JSONDecodeError):
         return None
 
 
-def gh_issue(root: Path, number: int) -> dict[str, Any] | None:
+def gh_issue(root: Path, number: int, *, allow_stale: bool = True) -> dict[str, Any] | None:
     value = cache_json(
         root,
         f"issue:{number}",
         ["gh", "issue", "view", str(number), "--json", "number,title,body,state,url,labels,updatedAt"],
         ttl=45,
+        allow_stale=allow_stale,
     )
     return value if isinstance(value, dict) else None
 
@@ -333,9 +376,16 @@ def mutation_prompt(prompt: str) -> bool:
 
 
 def mutation_command(command: str) -> bool:
+    """True when a command line changes something, in either shell a session can reach.
+
+    The PowerShell cmdlets carry as much weight as the POSIX verbs. The lease check asks
+    this question to decide whether a command is worth refusing while another session owns
+    the Issue, and a Set-Content that did not read as a mutation walked past it untouched
+    (Issue #59).
+    """
     return bool(
         re.search(
-            r"(?i)(?:\bgit\s+(?:add|commit|push|reset|checkout|switch|merge|rebase|cherry-pick)\b|\b(?:rm|mv|cp|mkdir|touch|sed\s+-i|perl\s+-pi|tee)\b|(?:^|\s)(?:>|>>)\s*\S|\b(?:npm|pnpm|yarn|cargo|go|pip|uv|poetry|bundle|dotnet|mvn|gradle)\s+(?:install|add|remove|update)\b)",
+            r"(?i)(?:\bgit\s+(?:add|commit|push|reset|checkout|switch|merge|rebase|cherry-pick)\b|\b(?:rm|mv|cp|mkdir|touch|sed\s+-i|perl\s+-pi|tee)\b|\b(?:Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item|Rename-Item|Tee-Object|Set-ItemProperty)\b|(?:^|\s)(?:>|>>)\s*\S|\b(?:npm|pnpm|yarn|cargo|go|pip|uv|poetry|bundle|dotnet|mvn|gradle)\s+(?:install|add|remove|update)\b)",
             command or "",
         )
     )
