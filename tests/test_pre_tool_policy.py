@@ -1081,3 +1081,80 @@ def test_a_command_token_is_judged_against_the_session_not_a_sibling(tmp_path, m
     reason = pre_tool_policy.missing_risk_labels(main, CFG, "Bash", {"command": command}, None)
     assert reason is not None
     assert "'dev' names none" in reason
+
+
+# Issue #87. The same mistake as #78's second defect, in the one place #78 did not reach:
+# `protected_push` asked which branch the session was standing on, so `./flow new` -- which
+# leaves the session on `dev` by design -- made every hand push of a task branch a refusal.
+
+
+def _on_branch(monkeypatch, name: str) -> None:
+    monkeypatch.setattr(pre_tool_policy, "branch", lambda *_: name)
+
+
+PUSHES_THAT_MUST_BE_REFUSED = [
+    pytest.param("git push origin dev", "dev", id="names-the-integration-branch"),
+    pytest.param("git push origin master", "dev", id="names-the-production-branch"),
+    pytest.param("git push origin HEAD:dev", "work/52-x", id="head-onto-integration"),
+    pytest.param("git push origin work/52-x:master", "work/52-x", id="task-branch-onto-production"),
+    pytest.param("git push", "dev", id="bare-push-from-integration"),
+    pytest.param("git push origin", "master", id="remote-only-from-production"),
+    # `HEAD` is refused for what cannot be read rather than for what can: the command does
+    # not say which branch it resolves to, so it is judged as if no refspec were given.
+    pytest.param("git push origin HEAD", "dev", id="head-from-integration"),
+    pytest.param("git push -u origin HEAD", "master", id="head-with-upstream-from-production"),
+]
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize(("command", "on"), PUSHES_THAT_MUST_BE_REFUSED)
+def test_a_push_that_could_reach_a_protected_branch_is_refused(root, monkeypatch, tool, command, on):
+    _on_branch(monkeypatch, on)
+    reason = pre_tool_policy.command_violation(root, command)
+    assert reason is not None, f"{command} on {on}"
+    assert "pull request" in reason
+
+
+PUSHES_THAT_MUST_BE_ALLOWED = [
+    pytest.param("git push origin work/23-replace-the-loader", "dev", id="task-branch-from-dev"),
+    pytest.param("git push -u origin work/15-pin-actions", "dev", id="with-upstream-from-dev"),
+    pytest.param("git push origin work/87-x", "master", id="task-branch-from-master"),
+    pytest.param("git push origin work/52-x:work/52-x", "dev", id="explicit-colon-refspec"),
+    pytest.param("git push", "work/52-x", id="bare-push-from-a-task-branch"),
+    pytest.param("git push --tags origin work/52-x", "dev", id="switch-before-the-remote"),
+]
+
+
+@pytest.mark.parametrize("tool", ["Bash", "PowerShell"])
+@pytest.mark.parametrize(("command", "on"), PUSHES_THAT_MUST_BE_ALLOWED)
+def test_pushing_a_task_branch_by_name_is_allowed_from_anywhere(root, monkeypatch, tool, command, on):
+    """The case that regressed, and the one no earlier test performed.
+
+    `./flow pr` pushes through a Python subprocess that no hook observes, so the sanctioned
+    path was never blocked and this refusal only ever hit someone reaching for git directly.
+    """
+    _on_branch(monkeypatch, on)
+    assert pre_tool_policy.command_violation(root, command) is None, f"{command} on {on}"
+
+
+def test_the_two_refusals_say_which_problem_it_is(root, monkeypatch):
+    """Different fixes, so they must not share one message.
+
+    Being told to use a pull request when the real problem is a missing refspec sends the
+    reader to the wrong place, which is how the original refusal read.
+    """
+    _on_branch(monkeypatch, "dev")
+    bare = pre_tool_policy.command_violation(root, "git push")
+    named = pre_tool_policy.command_violation(root, "git push origin dev")
+    assert bare is not None and named is not None
+    assert "names no branch" in bare
+    assert "names no branch" not in named
+    assert bare != named
+
+
+def test_a_force_push_of_a_task_branch_is_still_refused(root, monkeypatch):
+    """Loosening who may push must not loosen how. This one is caught before the branch is."""
+    _on_branch(monkeypatch, "work/52-x")
+    reason = pre_tool_policy.command_violation(root, "git push --force origin work/52-x")
+    assert reason is not None
+    assert "Force-pushing" in reason
