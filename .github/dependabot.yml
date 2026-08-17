@@ -24,6 +24,21 @@ updates:
     labels:
       - "type:maintenance"
       - "risk:dependencies"
+# Two pins are held on purpose and a test refuses to let either move, so a major-version
+# PR against them is a PR that cannot pass and will be reopened every week until it is
+# ignored here. chromadb is held below 1.0 for PYSEC-2026-311 / GHSA-f4j7-r4q5-qw2c, which
+# has no fixed release; posthog is held below 6 because Chroma 0.6.x calls
+# `posthog.capture(distinct_id, event, properties)` and posthog 6.0 changed that signature.
+# The reasoning lives at requirements.txt:10-27 and is enforced by
+# test_chromadb_is_held_below_the_affected_range and
+# test_posthog_is_held_where_chroma_can_call_it in tests/test_dependencies.py -- delete
+# these ignores when those tests go, and not before, so the rule cannot outlive its reason.
+# Minor and patch updates still arrive; only the major bump is suppressed.
+    ignore:
+      - dependency-name: "chromadb"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "posthog"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/"
     target-branch: "dev"
