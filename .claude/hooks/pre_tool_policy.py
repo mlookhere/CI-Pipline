@@ -366,6 +366,15 @@ def hinted_paths(command: str) -> list[str]:
     appearance of a control and not a control. Those writes are caught on the diff instead,
     by check_risk_labels in workflow/validate_pr.py, which reads what changed rather than
     what was typed and is the authoritative gate on every PR.
+
+    The same undecidability has cheaper spellings, named here so the residual risk is stated
+    at its real size rather than at the size of the examples above. The target reaches the
+    file but not this scraper when it is indirected through a variable (`f=ci/run; echo x > $f`),
+    spelled through an expansion (`echo x > $PWD/ci/run`), quoted mid-token (`echo x > ci"/"run`,
+    since only leading and trailing quotes are stripped), written with a leading `.//`
+    (`./` is folded only at the start), or placed after `>|`, whose `|` reads as a statement
+    end and truncates the target list. Each is a real bypass of this function and none is a
+    bypass of the diff gate, which is why the diff gate is the one called authoritative.
     """
     return [scraped_token(token) for token in re.findall(RISK_PATH_HINTS, command, re.I)]
 

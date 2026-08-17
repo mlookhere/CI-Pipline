@@ -229,8 +229,16 @@ def gh_issue_live(root: Path, number: int) -> dict[str, Any] | None:
     The timeout sits under the hook's own 12-second budget on purpose. A lookup that outlives
     the hook is killed before the refusal is emitted, and a killed PreToolUse hook denies
     nothing -- the slow case has to end in a refusal this process is still alive to print.
+
+    The budget is the whole hook invocation, not this call: `.claude/hooks/run` resolves an
+    interpreter and imports before the handler starts, and the handler runs several `git`
+    probes to decide the branch and lease before it asks GitHub anything. Nine seconds left
+    only what that preamble happened to cost, which is not a margin so much as a hope -- a
+    stalled `gh` behind a captive portal or a dropped VPN blocks for the full timeout rather
+    than failing fast, so the preamble plus 9 could cross 12 and take the refusal with it.
+    Five leaves the rest of the budget for the parts that are not allowed to be skipped.
     """
-    result = run(issue_query(number), cwd=root, timeout=9)
+    result = run(issue_query(number), cwd=root, timeout=5)
     if result.returncode != 0:
         return None
     try:
