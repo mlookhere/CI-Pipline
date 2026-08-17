@@ -11,6 +11,11 @@ The fix is delegation rather than comparison: `pyproject.toml` declares its depe
 arrangement itself, because the way it would break is not a mismatch appearing -- it is
 someone re-adding a static list, at which point the drift is back and nothing says so.
 
+The `--artifacts` half has since grown a second question of the same shape: not only
+whether the declaration reached the distribution, but whether the files the application
+reads at run time did. `packages.find` packages modules, and the web UI is data, so the
+wheel shipped without the page `GET /` serves (Issue #55).
+
 Deliberately line-oriented rather than parsed. `requires-python` is `>=3.10`, `tomllib`
 arrived in 3.11, and the fast gate runs under whichever interpreter `scripts/bootstrap`
 resolved. The facts being checked are exact declarations in files this repository owns,
@@ -31,6 +36,9 @@ PYPROJECT = ROOT / "pyproject.toml"
 REQUIREMENTS = ROOT / "requirements.txt"
 CONFIG = ROOT / ".claude-workflow.json"
 PACKAGE = ROOT / "knowledge_nexus"
+# Package data the application reads at run time, named as it appears inside a wheel.
+# Anything listed here must be in the built distributions, not merely in the checkout.
+PACKAGED_ASSETS = ("knowledge_nexus/web/index.html",)
 
 # A table heading, tolerating indentation and a trailing comment. Anchoring on `$` alone
 # would leave `[project]  # comment` unrecognised and silently fold its body into whichever
@@ -202,8 +210,7 @@ def check_artifacts(directory: Path, expected: list[str]) -> list[str]:
     import zipfile
 
     failures: list[str] = []
-    sdists = sorted(directory.glob("*.tar.gz"))
-    wheels = sorted(directory.glob("*.whl"))
+    sdists, wheels = distributions(directory)
     if not sdists or not wheels:
         return [
             f"{directory}: expected a source distribution and a wheel to inspect; "
@@ -228,6 +235,55 @@ def check_artifacts(directory: Path, expected: list[str]) -> list[str]:
         if name:
             content = wheel.read(name).decode("utf-8")
             failures += compare(wheels[-1].name, metadata_requirements(content), expected)
+    return failures
+
+
+def distributions(directory: Path) -> tuple[list[Path], list[Path]]:
+    """The sdists and wheels in a directory, sorted, so every check reads the same pair."""
+    return sorted(directory.glob("*.tar.gz")), sorted(directory.glob("*.whl"))
+
+
+def check_packaged_assets(directory: Path) -> list[str]:
+    """The application's data files have to be inside the distributions, not just the tree.
+
+    `[tool.setuptools.packages.find]` collects modules. The web UI is data, nothing carried
+    it, and so the wheel the release pipeline uploads contained no UI at all: the API routes
+    answered and `GET /` returned a 500 from a file that was never packaged (Issue #55).
+
+    Every gate stayed green through that, because tests and CI install the project editable,
+    where the checkout supplies what the distribution omits. Reading the archive is the only
+    check that distinguishes the artifact from the tree it was built from.
+    """
+    import tarfile
+    import zipfile
+
+    sdists, wheels = distributions(directory)
+    if not sdists or not wheels:
+        return [
+            f"{directory}: expected a source distribution and a wheel to inspect for "
+            f"{', '.join(PACKAGED_ASSETS)}; found {len(sdists)} sdist(s) and {len(wheels)} wheel(s)"
+        ]
+
+    failures: list[str] = []
+    with zipfile.ZipFile(wheels[-1]) as wheel:
+        packaged = set(wheel.namelist())
+        failures += [
+            f"{wheels[-1].name}: does not contain {asset}, so an install of this wheel serves no "
+            "web UI and answers the first request for it with a 500"
+            for asset in PACKAGED_ASSETS
+            if asset not in packaged
+        ]
+
+    with tarfile.open(sdists[-1]) as archive:
+        # Every member of an sdist is prefixed with its root directory, which carries the
+        # project version, so the asset is matched by its path within the package.
+        members = archive.getnames()
+        failures += [
+            f"{sdists[-1].name}: does not contain {asset}, so a wheel built from this source "
+            "distribution would ship without it"
+            for asset in PACKAGED_ASSETS
+            if not any(name.endswith(f"/{asset}") for name in members)
+        ]
     return failures
 
 
@@ -325,7 +381,10 @@ def main() -> int:
     parser.add_argument(
         "--artifacts",
         type=Path,
-        help="also verify built distributions in this directory against requirements.txt",
+        help=(
+            "also verify built distributions in this directory: their dependency metadata "
+            "against requirements.txt, and their contents against the packaged assets"
+        ),
     )
     args = parser.parse_args()
 
@@ -336,6 +395,7 @@ def main() -> int:
     failures += check_no_chroma_server_client()
     if args.artifacts:
         failures += check_artifacts(args.artifacts, declared(requirements))
+        failures += check_packaged_assets(args.artifacts)
     for failure in failures:
         print(f"failure: {failure}")
     if failures:
