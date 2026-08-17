@@ -166,15 +166,15 @@ def changed_files(root: Path) -> list[str]:
     return sorted(names)
 
 
-def cache_json(root: Path, key: str, command: list[str], ttl: int = 60, *, allow_stale: bool = True) -> Any:
+def cache_json(root: Path, key: str, command: list[str], ttl: int = 60) -> Any:
     """The command's JSON output, from cache while it is inside `ttl`.
 
-    `allow_stale` decides what happens when the command then fails -- `gh` absent,
-    unauthenticated, offline, rate-limited. Serving the expired copy is right for a caller
-    that would rather show something slightly old than nothing, which is what session
-    context and the compaction summary want. It is wrong for a caller deciding whether to
-    permit something: answering that from a copy already declared too old is fail-open
-    however the refusal text is worded, so those callers pass False and get None.
+    When the command then fails -- `gh` absent, unauthenticated, offline, rate-limited --
+    the expired copy is served anyway, because a caller that would rather show something
+    slightly old than nothing is the only kind of caller this has. Anything deciding whether
+    to permit something reads gh_issue_live instead and never reaches here: the cache lives
+    under .git/claude, which the policed session can write, so its answer is evidence about
+    a file rather than about the Issue (Issue #60).
     """
     cache = state_dir(root) / "cache" / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
     now = time.time()
@@ -192,22 +192,59 @@ def cache_json(root: Path, key: str, command: list[str], ttl: int = 60, *, allow
             return value
         except json.JSONDecodeError:
             pass
-    if not allow_stale:
-        return None
     try:
         return json.loads(cache.read_text(encoding="utf-8")).get("value")
     except (OSError, json.JSONDecodeError):
         return None
 
 
-def gh_issue(root: Path, number: int, *, allow_stale: bool = True) -> dict[str, Any] | None:
-    value = cache_json(
-        root,
-        f"issue:{number}",
-        ["gh", "issue", "view", str(number), "--json", "number,title,body,state,url,labels,updatedAt"],
-        ttl=45,
-        allow_stale=allow_stale,
-    )
+def issue_query(number: int) -> list[str]:
+    return ["gh", "issue", "view", str(number), "--json", "number,title,body,state,url,labels,updatedAt"]
+
+
+def gh_issue(root: Path, number: int) -> dict[str, Any] | None:
+    """The Issue for anything that displays it: session context, the compaction summary.
+
+    Cached, and therefore not an answer to a question about permission -- see gh_issue_live,
+    which is the reader the risk-label guard uses.
+    """
+    value = cache_json(root, f"issue:{number}", issue_query(number), ttl=45)
+    return value if isinstance(value, dict) else None
+
+
+def gh_issue_live(root: Path, number: int) -> dict[str, Any] | None:
+    """The Issue as `gh` reports it now, with no cache anywhere in the path.
+
+    The risk-label guard decides from this. cache_json keeps its answer in
+    .git/claude/cache/, and neither `risk_paths` nor the permission deny list covers
+    `.git/**`, so a session that can run a shell can write the file the guard was reading
+    its labels out of and grant itself any label set -- reachable by prompt injection, which
+    this repository already treats as live for retrieved document text (Issue #60). Expiring
+    that cache sooner does not help: a forgery carries whatever timestamp it likes, and the
+    reader cannot tell it from a real entry. So the decision does not read one.
+
+    Issue #52 kept an expired cache from answering this question and Issue #60 removes the
+    cache from the question entirely; the earlier guarantee is the weaker half of this one.
+
+    The timeout sits under the hook's own 12-second budget on purpose. A lookup that outlives
+    the hook is killed before the refusal is emitted, and a killed PreToolUse hook denies
+    nothing -- the slow case has to end in a refusal this process is still alive to print.
+
+    The budget is the whole hook invocation, not this call: `.claude/hooks/run` resolves an
+    interpreter and imports before the handler starts, and the handler runs several `git`
+    probes to decide the branch and lease before it asks GitHub anything. Nine seconds left
+    only what that preamble happened to cost, which is not a margin so much as a hope -- a
+    stalled `gh` behind a captive portal or a dropped VPN blocks for the full timeout rather
+    than failing fast, so the preamble plus 9 could cross 12 and take the refusal with it.
+    Five leaves the rest of the budget for the parts that are not allowed to be skipped.
+    """
+    result = run(issue_query(number), cwd=root, timeout=5)
+    if result.returncode != 0:
+        return None
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
     return value if isinstance(value, dict) else None
 
 
