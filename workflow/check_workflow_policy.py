@@ -44,6 +44,13 @@ CLAUDE_ACTION = "anthropics/claude-code-action@"
 DENY_EDIT_TOOLS = '--disallowedTools "Edit,Write,NotebookEdit"'
 FORK_GUARD = "head.repo.full_name == github.repository"
 SANITIZER = "sanitize_claude_input.py"
+RENDERER = "render_claude_review.py"
+COMMENT_COMMAND = re.compile(r"\bgh\s+pr\s+comment\b")
+# A program handed to an interpreter on stdin: a heredoc, or a lone `-` argument. Code that
+# arrives that way is invisible to every gate this repository runs -- it is not compiled by
+# the fast gate, not linted, not type-checked, and no test can reach it -- which is how the
+# advisory review comment came to be rendered by an unvalidated one-liner (Issue #41).
+STDIN_PROGRAM = re.compile(r"<<-?\s*[\"']?[A-Za-z_]\w*|\b(?:python3?|node|ruby|perl|bash|sh|zsh)\s+-(?=\s|$)")
 WRITE_PERMISSION = re.compile(r"(?im)^\s*(?:contents|pull-requests|issues|actions|checks)\s*:\s*write\s*$")
 # Line-anchored so a `${{ ... }}` group value keeps its closing braces.
 GROUP_SETTING = re.compile(r"(?im)^\s*group\s*:\s*(.+?)\s*$")
@@ -249,6 +256,12 @@ def check_claude_publisher_gate_text(text: str, rel: str) -> list[str]:
       `always()` keeps running when the run has been cancelled -- on a write-scoped job
       that means commenting on behalf of a run that was already abandoned.
 
+    A third property, about what the publisher does rather than when it runs: a job that
+    turns the review into a pull-request comment must build that comment with the reviewed
+    renderer. The envelope is model output steered by untrusted diff text, and the schema
+    constraining it is enforced by the action in the unprivileged job, so the comment body
+    has to be revalidated and contained by code that gates can actually read (Issue #41).
+
     Structure this reader cannot follow is a failure, not a pass. A flow-mapping job or
     a job name at the wrong indentation would otherwise take the publisher out of scope
     silently, which is the same class of bug as the one being fixed.
@@ -275,24 +288,72 @@ def check_claude_publisher_gate_text(text: str, rel: str) -> list[str]:
     for name, body in blocks:
         if CLAUDE_ACTION in body or not WRITE_PERMISSION.search(body):
             continue
-        condition = job_if(body) or ""
-        if not any(pattern.search(condition) for pattern in required):
+        failures.extend(publisher_failures(name, body, keyed[0], required, rel))
+    return failures
+
+
+def publisher_failures(
+    name: str, body: str, keyed: str, required: list[re.Pattern[str]], rel: str
+) -> list[str]:
+    """The three properties one privileged job in a Claude workflow has to satisfy.
+
+    Split out of the caller so each property stays a short, separately readable clause; the
+    docstring above `check_claude_publisher_gate_text` says why each of them is load-bearing.
+    """
+    failures: list[str] = []
+    condition = job_if(body) or ""
+    if not any(pattern.search(condition) for pattern in required):
+        failures.append(
+            f"{rel}: job {name!r} has repository write permission in a workflow that runs the "
+            f"Claude action, but its condition does not require {keyed!r} to have "
+            "succeeded; a privileged publisher must gate on the advisory job's success "
+            "explicitly, because that is what keeps it off forked pull requests"
+        )
+    if ALWAYS.search(condition):
+        failures.append(
+            f"{rel}: job {name!r} has repository write permission and uses always(), which "
+            "keeps running after the run is cancelled; use !cancelled() instead"
+        )
+    elif not NOT_CANCELLED.search(condition):
+        failures.append(
+            f"{rel}: job {name!r} has repository write permission but its condition carries no "
+            "status check function, so GitHub's implicit success() wrapper decides it and a "
+            "superseded run reports it cancelled rather than skipped; add !cancelled()"
+        )
+    if COMMENT_COMMAND.search(body) and RENDERER not in body:
+        failures.append(
+            f"{rel}: job {name!r} comments on the pull request with repository write "
+            f"permission but does not build the body with {RENDERER}; the review envelope is "
+            "model output steered by untrusted diff text, and the schema that constrains it "
+            "is enforced by the action, not by this job"
+        )
+    return failures
+
+
+def check_privileged_inline_script_text(text: str, rel: str) -> list[str]:
+    """A job holding write permission must not run a program fed to an interpreter on stdin.
+
+    Nothing else in this repository can see such a program. `self_test.py` compiles the
+    tracked Python, ruff lints it, mypy checks it and pytest exercises it -- all of them by
+    path, none of them inside a YAML string. A heredoc is therefore the one place where
+    privileged logic can be written with no gate reading it, which is exactly where the
+    advisory review's unvalidated renderer survived (Issue #41).
+
+    Scoped to write permission rather than applied to every job, because the cost of being
+    unreviewable scales with what the job may do: an inline script in a read-only job can
+    only mislead its own log, while this one comments as the repository.
+    """
+    failures: list[str] = []
+    for name, body in job_blocks(text):
+        if not WRITE_PERMISSION.search(body):
+            continue
+        found = STDIN_PROGRAM.search(body)
+        if found:
             failures.append(
-                f"{rel}: job {name!r} has repository write permission in a workflow that runs the "
-                f"Claude action, but its condition does not require {keyed[0]!r} to have "
-                "succeeded; a privileged publisher must gate on the advisory job's success "
-                "explicitly, because that is what keeps it off forked pull requests"
-            )
-        if ALWAYS.search(condition):
-            failures.append(
-                f"{rel}: job {name!r} has repository write permission and uses always(), which "
-                "keeps running after the run is cancelled; use !cancelled() instead"
-            )
-        elif not NOT_CANCELLED.search(condition):
-            failures.append(
-                f"{rel}: job {name!r} has repository write permission but its condition carries no "
-                "status check function, so GitHub's implicit success() wrapper decides it and a "
-                "superseded run reports it cancelled rather than skipped; add !cancelled()"
+                f"{rel}: job {name!r} has repository write permission and feeds a program to an "
+                f"interpreter on stdin ({found.group(0).strip()!r}); code written there is not "
+                "compiled, linted, type-checked or tested by any gate here, so put it under "
+                "workflow/ and call it by path"
             )
     return failures
 
@@ -320,6 +381,7 @@ def check(path: Path) -> list[str]:
     failures.extend(check_claude_job_text(text, rel))
     failures.extend(check_closure_concurrency_text(text, rel))
     failures.extend(check_claude_publisher_gate_text(text, rel))
+    failures.extend(check_privileged_inline_script_text(text, rel))
     return failures
 
 
