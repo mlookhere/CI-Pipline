@@ -29,6 +29,11 @@ exists to prevent, and the thing it is most able to ship.
   suppressions, lower thresholds, or widen permissions to make CI pass.
 - Add regression coverage for behavior changes. Favor small explicit units, clear error
   contracts, bounded complexity, and observable failures.
+- Keep it small. The smallest diff that fixes the stated defect is the whole change; scope
+  growth is a new Issue, not a bigger one. Delete rather than finish anything nothing calls --
+  code with no caller is a claim the repository cannot keep. Do not add an abstraction until a
+  second caller exists, and do not add configuration, a checklist item or a command group that
+  nothing reads, because a declaration nothing enforces reads exactly like one that does.
 - Never expose credentials, client data, or tokens to prompts, logs, Issues, artifacts, or
   subprocess environments. `.env` is never committed.
 - A check that cannot fail is a defect. When adding or changing a gate, demonstrate it
