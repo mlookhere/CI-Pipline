@@ -770,3 +770,23 @@ def test_the_control_renderer_still_does_not_read_pull_request_labels():
     assert "labels" not in request.group(0).split('"pr",')[-1], (
         "the pull request query now asks for labels; sync-control.yml must react to them again"
     )
+
+
+def test_the_sync_group_is_scoped_to_one_trigger():
+    """A shared group let unrelated triggers cancel the run reported on a pull request.
+
+    Only `pull_request_target` runs appear as a check on a pull request. `./flow pr` fires an
+    `issues` event twice immediately after creating one -- labelling the task Issue, then
+    rewriting the control Issue -- and under a single group those cancelled the run whose
+    result the pull request displays. The cancellation was reported as a failed check for the
+    entire life of this repository (Issue #24).
+    """
+    workflow = (self_test.ROOT / ".github" / "workflows" / "sync-control.yml").read_text(encoding="utf-8")
+    sync = dict(job_blocks(workflow)).get("sync")
+    assert sync, "the sync job was not found"
+    group = re.search(r"(?m)^\s*group:\s*(.+?)\s*$", sync)
+    assert group, "the sync job declares no concurrency group"
+    assert "github.event_name" in group.group(1), (
+        f"sync runs in group {group.group(1)!r}, shared across triggers; an issues event can "
+        "cancel the run a pull request reports"
+    )
