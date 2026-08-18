@@ -6,18 +6,40 @@ import fnmatch
 import os
 import re
 import shlex
+import sys
 
 from common import *
 
+# `git`, `git.exe`, a path to either, and any run of global options in between -- including
+# `-c key=value` and `-C path`, which take a separate word. Written once and shared by every
+# rule that names git, because `git.exe commit --no-verify` and `git -C . push origin dev`
+# defeated all of them: each pattern spelled the invocation as two literal words (Issue #90).
+GIT = r"(?:[^\s;|&]*[/\\])?git(?:\.exe)?(?:\s+-[cC]\s+\S+|\s+-\S+)*\s+"
+GIT_NAMES = {"git", "git.exe"}
+# Global options that consume the following word, so the subcommand is not simply the next
+# one along.
+GIT_GLOBALS_WITH_VALUE = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+# Push options that consume the following word, so their value is not a refspec. Not eating
+# them is what let `git push -o ci.skip origin` read `origin` as a refspec: the push then
+# looked like it named a branch, and the bare-push rule that would have refused it was
+# skipped (Issue #90).
+PUSH_OPTIONS_WITH_VALUE = {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
+# These write every branch the remote has, protected ones included, while naming none of
+# them. No refspec appears, so every rule that reads refspecs is blind to them.
+WRITES_EVERY_BRANCH = {"--mirror", "--all"}
+# `-f` survives bundling: `-fu` is a force push and matched neither the `-f(?:\s|$)` in DENY
+# nor the leading `+` this hook reads.
+BUNDLED_FORCE = re.compile(r"^-[A-Za-z]*f[A-Za-z]*$")
+
 DENY = [
-    (r"\bgit\s+(?:commit|push)\b[^\n]*--no-verify\b", "Hook bypasses are prohibited; fix the failing hook."),
+    (rf"\b{GIT}(?:commit|push)\b[^\n]*--no-verify\b", "Hook bypasses are prohibited; fix the failing hook."),
     (
-        r"\bgit\s+push\b[^\n]*(?:--force(?:-with-lease|-if-includes)?(?:=\S+)?(?:\s|$)|-f(?:\s|$))",
+        rf"\b{GIT}push\b[^\n]*(?:--force(?:-with-lease|-if-includes)?(?:=\S+)?(?:\s|$)|-f(?:\s|$))",
         "Force-pushing is prohibited by the standard workflow.",
     ),
     (r"\bgh\s+pr\s+merge\b[^\n]*--admin\b", "Administrator merge bypasses are prohibited."),
-    (r"\bgit\s+reset\s+--hard\b", "Hard reset is prohibited in a standard task session."),
-    (r"\bgit\s+clean\b[^\n]*(?:-[A-Za-z]*[fx][A-Za-z]*|--force)", "Destructive git clean is prohibited."),
+    (rf"\b{GIT}reset\s+--hard\b", "Hard reset is prohibited in a standard task session."),
+    (rf"\b{GIT}clean\b[^\n]*(?:-[A-Za-z]*[fx][A-Za-z]*|--force)", "Destructive git clean is prohibited."),
     (r"\brm\s+-rf\s+(?:/|~|\$HOME|\.git)(?:\s|$)", "Destructive filesystem deletion is prohibited."),
     # The same prohibition in PowerShell, which spells it as a cmdlet with separate
     # switches rather than a bundled `-rf`, so the entry above never saw it. The target
@@ -43,7 +65,7 @@ DENY = [
     ),
     (r"\bchmod\s+(?:-R\s+)?777\b", "World-writable permissions are prohibited."),
     (
-        r"\bgit\s+config\b[^\n]*(?:http\..*extraheader|credential\.helper)",
+        rf"\b{GIT}config\b[^\n]*(?:http\..*extraheader|credential\.helper)",
         "Credential persistence through Git config is prohibited.",
     ),
 ]
@@ -78,36 +100,138 @@ def risk_matches(cfg: dict, paths: list[str]) -> dict[str, tuple[str, str]]:
     return result
 
 
-GIT_PUSH = re.compile(r"(?i)\bgit\s+push\b")
 # A token carrying either of these is a redirection, not a ref. `2>&1` survived the switch
 # filter because it starts with a digit, and reading it as a refspec is what let
 # `git push 2>&1 | tail` look like a push that named a branch.
 REDIRECTION = re.compile(r"[<>]")
 
 
-def pushed_refs(command: str) -> list[str]:
-    """The refs a `git push` names, or [] when it names none and would push the current one.
+def statements(command: str) -> list[str]:
+    """`command` split where one command ends and the next begins.
 
-    Everything in the push's own statement that is not a switch and not a redirection, minus
-    the remote, which is the first such word.
+    Every push has to be read, not just the first. `GIT_PUSH.search` returned one match, so
+    `git push origin work/52-x && git push origin dev` was judged entirely on its harmless
+    first half (Issue #90).
+    """
+    return STATEMENT_END.split(command)
 
-    Bounded at the statement end for the reason Issue #78 records: without it, `git push |
-    tee out.log` reads `tee` as a remote and `out.log` as a ref, so a bare push acquires an
-    imaginary refspec and stops being judged as bare. This direction of the mistake is the
-    dangerous one -- it allows rather than refuses -- which is why the scan is narrowed to
-    the statement rather than the whole command line.
+
+def tokenise(statement: str) -> list[str]:
+    """Words with their quotes removed.
+
+    A whitespace split leaves them on, so `git push origin "dev"` produced the token `"dev"`,
+    which is not the name of any branch and matched no protected one. `'+dev'` defeated the
+    force-push rule the same way. Stripping first also means a quoted switch is still read as
+    a switch (Issue #90).
+    """
+    return [token for token in (word.strip("\"'") for word in statement.split()) if token]
+
+
+def push_arguments(statement: str) -> list[str] | None:
+    """The words `git push` was given here, or None when this statement runs no push.
+
+    The invocation is walked rather than matched as two literal words, so a path, a `.exe`
+    suffix and any run of global options are all recognised. `git.exe push origin dev` and
+    `git -C . push origin dev` were both invisible to a `\\bgit\\s+push\\b` pattern, and so
+    were the config-driven forms like `git -c remote.origin.push=... push` (Issue #90).
+    """
+    tokens = tokenise(statement)
+    index = 0
+    while index < len(tokens):
+        name = tokens[index].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name in GIT_NAMES:
+            break
+        index += 1
+    else:
+        return None
+
+    index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in GIT_GLOBALS_WITH_VALUE:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    if index >= len(tokens) or tokens[index].lower() != "push":
+        return None
+    return tokens[index + 1 :]
+
+
+def split_push_arguments(args: list[str]) -> tuple[list[str], set[str]]:
+    """(positional words, switch names), with option values consumed rather than read as refs."""
+    positional: list[str] = []
+    switches: set[str] = set()
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token.startswith("-"):
+            name = token.split("=", 1)[0]
+            switches.add(name)
+            index += 2 if name in PUSH_OPTIONS_WITH_VALUE and "=" not in token else 1
+            continue
+        if REDIRECTION.search(token):
+            index += 1
+            continue
+        positional.append(token)
+        index += 1
+    return positional, switches
+
+
+def parsed_pushes(command: str) -> list[tuple[list[str], set[str]]]:
+    """(named refs, switches) for every `git push` in `command`.
+
+    The refs are the positional words after the remote. An empty list means the push names
+    nothing and would send the current branch -- the case that has to be judged against the
+    session's own branch instead.
 
     `HEAD` counts as naming nothing: what it resolves to cannot be read out of the command
-    text, so it has to be judged as if no refspec were given (Issue #87).
+    text, so it is judged as if no refspec were given (Issue #87).
     """
-    match = GIT_PUSH.search(command)
-    if not match:
-        return []
-    end = STATEMENT_END.search(command, match.end())
-    statement = command[match.end() : end.start() if end else len(command)]
-    words = [word for word in statement.split() if not word.startswith("-") and not REDIRECTION.search(word)]
-    refs = [word for word in words[1:] if word.upper() != "HEAD"]
-    return refs if len(words) > 1 else []
+    pushes = []
+    for statement in statements(command):
+        args = push_arguments(statement)
+        if args is None:
+            continue
+        positional, switches = split_push_arguments(args)
+        refs = [ref for ref in positional[1:] if ref.upper() != "HEAD"]
+        pushes.append((refs if len(positional) > 1 else [], switches))
+    return pushes
+
+
+def pushed_refs(command: str) -> list[str]:
+    """The refs the first `git push` in `command` names, or [] when it names none."""
+    pushes = parsed_pushes(command)
+    return pushes[0][0] if pushes else []
+
+
+def destination_branch(ref: str) -> str:
+    """The branch name a refspec writes to, stripped of everything that hides it.
+
+    Three spellings all name `dev` and none of them is the bare word: `+dev` (a force push),
+    `HEAD:refs/heads/dev` (a fully qualified destination) and `:dev` (a deletion). Only the
+    half after the last colon is written -- in `src:dst` the source is read, so a task branch
+    pushed to `dev` is a push to `dev` no matter what it is called locally.
+    """
+    ref = ref.lstrip("+").rsplit(":", 1)[-1]
+    for prefix in ("refs/heads/", "heads/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return ref
+
+
+def writes_protected_branch(ref: str, branches: list[str]) -> bool:
+    """Whether this refspec writes one of `branches`.
+
+    Matched as a glob rather than compared, because a refspec may be one:
+    `git push origin 'refs/heads/*:refs/heads/*'` writes every branch there is and equals
+    none of them by name (Issue #90). fnmatchcase, not fnmatch -- git refs are
+    case-sensitive and fnmatch would fold them on Windows.
+    """
+    destination = destination_branch(ref)
+    return any(fnmatch.fnmatchcase(name, destination) for name in branches)
 
 
 def protected_push(root: Path, command: str) -> str | None:
@@ -124,33 +248,51 @@ def protected_push(root: Path, command: str) -> str | None:
     task branch, with a message naming a prohibition the command did not violate. It is the
     same mistake Issue #78 fixed for risk labels -- the wrong checkout answering -- in the
     one place #78 did not reach.
+
+    The destination is read from the refs, not from the command text. Searching the text was
+    the third defect in this guard (Issue #90): it required the protected name to sit between
+    a space-or-colon and a space-or-end, so `git push origin +dev` -- a force push to `dev` --
+    did not match, and `pushed_refs` returning `['+dev']` then made it too non-bare for the
+    rule below to catch either. A ref is a ref; parse it once and judge the parse.
+
+    Every push in the command is judged, not only the first.
     """
     branches = list(config(root).get("branches", {}).values()) or ["main", "master", "dev"]
-    if not re.search(r"(?i)\bgit\s+push\b", command):
-        return None
-    named = pushed_refs(command)
-    if any(re.search(rf"(?:\s|:){re.escape(name)}(?:\s|$)", command) for name in branches):
-        return "Direct pushes to integration or production branches are prohibited; use a pull request."
-    if not named and branch(root) in branches:
-        return (
-            f"This push names no branch, so it would push {branch(root)!r}, which is an "
-            "integration or production branch. Push the task branch by name, or open a pull "
-            "request."
-        )
+    for named, switches in parsed_pushes(command):
+        if switches & WRITES_EVERY_BRANCH:
+            option = ", ".join(sorted(switches & WRITES_EVERY_BRANCH))
+            return (
+                f"{option} pushes every branch the remote has, including the integration and "
+                "production branches, without naming any of them. Push the task branch by name."
+            )
+        if any(writes_protected_branch(ref, branches) for ref in named):
+            return "Direct pushes to integration or production branches are prohibited; use a pull request."
+        if not named and branch(root) in branches:
+            return (
+                f"This push names no branch, so it would push {branch(root)!r}, which is an "
+                "integration or production branch. Push the task branch by name, or open a pull "
+                "request."
+            )
     return None
 
 
+def audit(root: Path, event_name: str, payload: dict) -> None:
+    """Record what happened, and never let recording it change what happens.
+
+    `log_event` opens a file, so it can raise for reasons that have nothing to do with the
+    decision being logged: a read-only `.git`, a full disk, a path Windows will not accept.
+    Raising out of `deny` used to mean the denial was never emitted, and because
+    `.claude/hooks/run` execs Python the hook then exited 1 -- a non-blocking error -- so the
+    command that was about to be refused ran instead (Issue #90). Telemetry is not worth a
+    bypass.
+    """
+    try:
+        log_event(root, event_name, payload)
+    except Exception:
+        pass
+
+
 def deny(root: Path, event: dict, issue_no: int | None, reason: str, category: str) -> None:
-    log_event(
-        root,
-        "PolicyDecision",
-        {
-            "session_id": event.get("session_id"),
-            "issue": issue_no,
-            "decision": "deny",
-            "category": category,
-        },
-    )
     emit(
         {
             "hookSpecificOutput": {
@@ -159,6 +301,16 @@ def deny(root: Path, event: dict, issue_no: int | None, reason: str, category: s
                 "permissionDecisionReason": reason,
             }
         }
+    )
+    audit(
+        root,
+        "PolicyDecision",
+        {
+            "session_id": event.get("session_id"),
+            "issue": issue_no,
+            "decision": "deny",
+            "category": category,
+        },
     )
 
 
@@ -236,11 +388,28 @@ def lease_conflict(
     )
 
 
+def forced_push(command: str) -> str | None:
+    """The two force-push spellings that announce nothing.
+
+    The DENY entry above matches `--force`, `--force-with-lease` and a lone `-f`, which is
+    every spelling that looks like one. Two do not: a leading `+` on a refspec, and `-f`
+    bundled with other short options as `-fu`. Both are the same operation and matched
+    nothing at all (Issue #90). Read from the parsed push rather than the command text, so a
+    `+` inside an unrelated later argument is not mistaken for one.
+    """
+    for named, switches in parsed_pushes(command):
+        if any(ref.startswith("+") for ref in named):
+            return "Force-pushing is prohibited by the standard workflow; '+ref' is a force push."
+        if any(BUNDLED_FORCE.match(switch) for switch in switches):
+            return "Force-pushing is prohibited by the standard workflow; '-f' is a force push."
+    return None
+
+
 def command_violation(root: Path, command: str) -> str | None:
     for pattern, reason in DENY:
         if re.search(pattern, command, re.I):
             return reason
-    return protected_push(root, command)
+    return forced_push(command) or protected_push(root, command)
 
 
 def plain_spelling(value: str) -> str:
@@ -666,7 +835,7 @@ def main() -> int:
         )
         return 0
 
-    log_event(
+    audit(
         root,
         "PreToolUse",
         {
@@ -679,5 +848,28 @@ def main() -> int:
     return 0
 
 
+def guarded_main() -> int:
+    """Run the policy, and block rather than shrug if it cannot run.
+
+    Nothing in `main` was wrapped, so any unexpected exception -- in a lease read, a label
+    lookup, a subprocess that timed out -- left Python exiting 1. On `PreToolUse` that is a
+    non-blocking error: the message is surfaced and the tool call proceeds anyway. So the one
+    hook whose entire job is refusing commands stopped refusing them whenever it broke, which
+    is the failure mode `.claude/hooks/run` already refuses to accept for itself (`run:24-31`
+    picks 2, not 1, for exactly this hook). This makes the Python side agree with the wrapper
+    (Issue #90).
+    """
+    try:
+        return main()
+    except Exception as error:
+        print(
+            f"pre_tool_policy failed to evaluate this command: {type(error).__name__}: {error}\n"
+            "Refusing it rather than allowing an unevaluated command. "
+            "Repository policy hooks are NOT enforcing until this is fixed.",
+            file=sys.stderr,
+        )
+        return 2
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(guarded_main())

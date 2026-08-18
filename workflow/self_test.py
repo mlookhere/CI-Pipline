@@ -106,6 +106,75 @@ def command_exists(command: str) -> bool:
     )
 
 
+# Every prohibition `.claude/rules/command-policy.md` states in prose, as the settings entry
+# that enforces it. Nothing read `permissions` before, so an edit that deleted a rule -- and
+# `/permissions` deletes them one click at a time -- changed what the session was allowed to
+# do and failed no gate (Issue #90). Branch protection returns 403 on this plan, which makes
+# the admin-merge entry the only thing between a session and a required-checks bypass.
+REQUIRED_DENY_RULES = (
+    "Bash(git push --force *)",
+    "Bash(git push -f *)",
+    "Bash(git commit --no-verify *)",
+    "Bash(git push --no-verify *)",
+    "Bash(git reset --hard *)",
+    "Bash(git clean -f *)",
+    "Bash(gh pr merge --admin *)",
+    "Bash(gh secret *)",
+    "Bash(gh variable *)",
+    "Bash(docker system prune *)",
+)
+
+
+def check_workflow_policy() -> list[str]:
+    """Run the policy checker, and treat any non-zero exit as a failure.
+
+    Failures used to be harvested only from lines starting with `failure:`, so a checker that
+    *crashed* contributed none of them -- the traceback went to stderr -- and this function's
+    caller returned 0. `workflow_self_test` is the first command in the fast gate, which made
+    it the widest of the fail-open defects Issue #90 collected: the gate reported clean for a
+    check that never ran.
+    """
+    policy = subprocess.run(
+        [sys.executable, str(ROOT / "workflow" / "check_workflow_policy.py")],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
+    if policy.returncode == 0:
+        return []
+    reported = [line for line in policy.stdout.splitlines() if line.startswith("failure:")]
+    if reported:
+        return reported
+    detail = (policy.stderr or policy.stdout or "").strip().splitlines()
+    tail = detail[-1] if detail else "no output"
+    return [
+        f"check_workflow_policy.py exited {policy.returncode} without reporting a failure, "
+        f"so it did not complete: {tail}"
+    ]
+
+
+def check_deny_rules(hooks_config: Any) -> list[str]:
+    """The written policy and the enforced policy have to be the same policy."""
+    if not isinstance(hooks_config, dict):
+        return []
+    permissions = hooks_config.get("permissions")
+    if not isinstance(permissions, dict):
+        return [".claude/settings.json: permissions block is missing"]
+    deny = permissions.get("deny")
+    if not isinstance(deny, list):
+        return [".claude/settings.json: permissions.deny must be a list"]
+    missing = [rule for rule in REQUIRED_DENY_RULES if rule not in deny]
+    if not missing:
+        return []
+    return [
+        ".claude/settings.json: permissions.deny is missing "
+        f"{', '.join(repr(rule) for rule in missing)}, which .claude/rules/command-policy.md "
+        "prohibits"
+    ]
+
+
 def check_hooks(hooks_config: Any) -> list[str]:
     """Every lifecycle event wired, pointing at a real hook, with a sane timeout."""
     failures: list[str] = []
@@ -461,6 +530,7 @@ def main() -> int:
             failures.append(f".claude-workflow.json: invalid {branch_kind} branch {value!r}")
 
     failures += check_hooks(hooks_config)
+    failures += check_deny_rules(hooks_config)
     failures += check_policy_matchers(hooks_config)
     failures += check_executables()
     failures += check_pr_template()
@@ -472,16 +542,7 @@ def main() -> int:
 
     check_python(failures)
 
-    policy = subprocess.run(
-        [sys.executable, str(ROOT / "workflow" / "check_workflow_policy.py")],
-        cwd=ROOT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-    )
-    if policy.returncode != 0:
-        failures.extend(line for line in policy.stdout.splitlines() if line.startswith("failure:"))
+    failures += check_workflow_policy()
 
     if args.ci and not command_exists("git"):
         failures.append("git is required in CI")

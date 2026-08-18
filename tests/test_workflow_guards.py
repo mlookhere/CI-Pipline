@@ -286,3 +286,100 @@ def test_a_bare_python3_invocation_is_recognised(line):
 )
 def test_the_resolver_pattern_is_not_mistaken_for_a_bare_interpreter(line):
     assert not self_test.BARE_PYTHON3.search(line)
+
+
+# Issue #90. Two ways the self-test reported a clean gate for a check that had not run.
+
+
+def _with_checker(tmp_path, monkeypatch, source: str) -> None:
+    (tmp_path / "workflow").mkdir(exist_ok=True)
+    (tmp_path / "workflow" / "check_workflow_policy.py").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(self_test, "ROOT", tmp_path)
+
+
+CRASHING_CHECKERS = [
+    pytest.param("import sys\nsys.exit('boom')\n", id="message-on-stderr"),
+    pytest.param("raise RuntimeError('boom')\n", id="traceback"),
+    pytest.param("import sys\nsys.exit(3)\n", id="silent-non-zero"),
+    pytest.param("import sys\nprint('chatter')\nsys.exit(1)\n", id="output-but-no-failure-lines"),
+]
+
+
+@pytest.mark.parametrize("source", CRASHING_CHECKERS)
+def test_a_crashing_policy_checker_is_a_failure_whatever_reached_stdout(tmp_path, monkeypatch, source):
+    """Failures were harvested only from lines starting with `failure:`.
+
+    A checker that raised contributed none of those -- its traceback went to stderr -- so
+    `failures` stayed empty and `self_test` returned 0. `workflow_self_test` is the first
+    command in the fast gate, which made this the widest of the fail-open defects
+    (Issue #90).
+
+    Driven through `check_workflow_policy` against a substitute checker. The first version of
+    this test asserted that a phrase appeared in `self_test.py`, which a comment would have
+    satisfied -- it was vacuous, and would have passed against the unfixed code.
+    """
+    _with_checker(tmp_path, monkeypatch, source)
+
+    failures = self_test.check_workflow_policy()
+
+    assert failures, "a checker that exited non-zero was reported as no findings"
+    assert "did not complete" in failures[0]
+
+
+def test_a_reported_failure_is_passed_through_unchanged(tmp_path, monkeypatch):
+    """The synthesised failure must not displace real findings when the checker reports some."""
+    _with_checker(tmp_path, monkeypatch, "import sys\nprint('failure: a real finding')\nsys.exit(1)\n")
+
+    assert self_test.check_workflow_policy() == ["failure: a real finding"]
+
+
+def test_a_passing_policy_checker_still_reports_nothing(tmp_path, monkeypatch):
+    """The other direction: exit 0 must not become a failure now that every non-zero is one."""
+    _with_checker(tmp_path, monkeypatch, "")
+
+    assert self_test.check_workflow_policy() == []
+
+
+DENY_RULES_THE_WRITTEN_POLICY_REQUIRES = [
+    pytest.param("Bash(gh pr merge --admin *)", id="admin-merge"),
+    pytest.param("Bash(git push --force *)", id="force-push"),
+    pytest.param("Bash(git reset --hard *)", id="hard-reset"),
+    pytest.param("Bash(docker system prune *)", id="docker-prune"),
+    pytest.param("Bash(gh secret *)", id="secret-admin"),
+    pytest.param("Bash(gh variable *)", id="variable-admin"),
+]
+
+
+@pytest.mark.parametrize("rule", DENY_RULES_THE_WRITTEN_POLICY_REQUIRES)
+def test_removing_a_required_deny_rule_fails_the_self_test(rule):
+    """`/permissions` deletes these one click at a time and no gate noticed (Issue #90).
+
+    Branch protection returns 403 on this plan, so the admin-merge entry is the only thing
+    standing between a session and a required-checks bypass.
+    """
+    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert rule in settings["permissions"]["deny"]
+
+    weakened = json.loads(json.dumps(settings))
+    weakened["permissions"]["deny"] = [entry for entry in weakened["permissions"]["deny"] if entry != rule]
+    failures = self_test.check_deny_rules(weakened)
+    assert failures, f"removing {rule} was not detected"
+    assert rule in failures[0]
+    assert "command-policy.md" in failures[0]
+
+
+def test_the_committed_settings_satisfy_the_written_policy():
+    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert self_test.check_deny_rules(settings) == []
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param({}, id="no-permissions-block"),
+        pytest.param({"permissions": {}}, id="no-deny-list"),
+        pytest.param({"permissions": {"deny": "everything"}}, id="deny-is-not-a-list"),
+    ],
+)
+def test_a_malformed_permissions_block_is_not_read_as_compliant(config):
+    assert self_test.check_deny_rules(config) != []
