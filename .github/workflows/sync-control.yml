@@ -6,7 +6,9 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, closed, labeled, unlabeled, ready_for_review, converted_to_draft]
   workflow_run:
-    workflows: ["PR CI", "Release gate", "Build and attest release", "Deploy development", "Deploy production", "Roll back production"]
+    # Only the workflows this repository actually has. A name here that matches nothing
+    # never fires, so a stale entry is a trigger that silently does not exist.
+    workflows: ["PR CI", "Release gate"]
     types: [completed]
   workflow_dispatch:
 
