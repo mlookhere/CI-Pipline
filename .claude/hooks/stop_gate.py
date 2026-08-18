@@ -12,12 +12,34 @@ COMPLETE = re.compile(
 
 
 def report_fresh(root: Path) -> bool:
+    """A gate that passed on this commit -- not merely a file newer than it.
+
+    This compared modification times and never opened the report. Every stage writes the same
+    shape whether it passed or failed, so a run that had just gone red satisfied the check
+    that exists to confirm the work is finished, and a run against an older commit satisfied
+    it too as long as the file was touched afterwards. The one thing a completion claim needs
+    to be backed by is the one thing it did not read.
+
+    Both halves are now required: `success` is true, and `commit` is this HEAD. A stale report
+    left behind by an earlier commit no longer counts, which is the case that made the
+    mtime comparison look like it was working.
+    """
     reports = root / "artifacts" / "ci"
-    if not reports.exists():
+    if not reports.is_dir():
         return False
-    newest = max((path.stat().st_mtime for path in reports.rglob("*.json")), default=0)
-    commit_time = int(git(root, "show", "-s", "--format=%ct", "HEAD") or 0)
-    return newest >= commit_time
+    head = git(root, "rev-parse", "HEAD")
+    if not head:
+        return False
+    for path in sorted(reports.rglob("*.json")):
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        if report.get("success") is True and report.get("commit") == head:
+            return True
+    return False
 
 
 def fresh_issue(root: Path, issue: int) -> dict:
