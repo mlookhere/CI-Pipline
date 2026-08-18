@@ -72,7 +72,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: control-issue-sync
+      # Per trigger, not one group for the whole job. Only a `pull_request_target` run is
+      # reported as a check on a pull request, and a global group let the other triggers
+      # cancel it: `./flow pr` creates the pull request, then labels the controlling Issue,
+      # then rewrites the control Issue body, so two `issues` events land within a second of
+      # the `pull_request_target` one and cancelled it. Trimming the pull-request event types
+      # did not help, because the events doing the cancelling were never pull-request events
+      # (Issue #24). Runs of the same trigger still supersede each other, which is what
+      # idempotence buys.
+      group: control-issue-sync-${{ github.event_name }}
       cancel-in-progress: true
     steps:
       - name: Check out only the protected default branch
