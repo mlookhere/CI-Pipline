@@ -55,6 +55,34 @@ def path_requires_label(path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
 
 
+# Authors that cannot open an Issue, name a task branch, or write PR prose, because they are
+# not people. The login is read from the pull_request event payload, where only GitHub sets
+# it -- a contributor cannot present themselves as one of these.
+AUTOMATED_AUTHORS = frozenset({"dependabot[bot]", "dependabot-preview[bot]"})
+
+
+def automated(pr: dict[str, Any], base: str, integration: str) -> bool:
+    """True for an automated dependency pull request into the integration branch.
+
+    Without this the plane contradicts itself. `check_workflow_policy.check_dependabot_text`
+    *requires* every Dependabot ecosystem to set `target-branch: dev`, precisely so its pull
+    requests pass through this gate rather than around it -- and this gate then demands a
+    `Refs #ISSUE`, a `work/<issue>-slug` branch and prose sections, none of which Dependabot
+    writes. Every dependency update failed a required check, so with branch protection real,
+    none of them could merge at all.
+
+    Narrow on purpose, in two directions. Only the requirements that presuppose a human author
+    are waived; everything about the change itself -- risk labels for the changed paths, the
+    size budget, and every other gate on the pull request -- still applies, and
+    `check_risk_labels` and `check_size` already fall back to the PR's own labels when there is
+    no Issue. And it never covers the production branch: an automated pull request must not
+    reach production without a `type:release` Issue, whoever opened it.
+    """
+    if base != integration:
+        return False
+    return str(pr.get("user", {}).get("login", "")) in AUTOMATED_AUTHORS
+
+
 def check_branch_and_body(
     body: str, head: str, base: str, integration: str, branch_prefix: str, issue_number: int | None
 ) -> list[str]:
@@ -136,6 +164,34 @@ def check_size(
     return failures
 
 
+def linked_issue(body: str) -> int | None:
+    match = LINK_RE.search(body)
+    return int(match.group(1)) if match else None
+
+
+def check_authorship(
+    pr: dict[str, Any],
+    body: str,
+    head: str,
+    base: str,
+    integration: str,
+    branch_prefix: str,
+    issue_number: int | None,
+) -> list[str]:
+    """The requirements that presuppose a person wrote the pull request.
+
+    Split out from `main` rather than inlined: with the automated-author branch added, `main`
+    reached a cyclomatic complexity of 18 against a budget of 15, and the honest fix for that
+    is a smaller function, not a larger budget.
+    """
+    if automated(pr, base, integration):
+        return []
+    failures = []
+    if issue_number is None:
+        failures.append("PR body must contain `Refs #ISSUE`, `Fixes #ISSUE`, or `Closes #ISSUE`.")
+    return failures + check_branch_and_body(body, head, base, integration, branch_prefix, issue_number)
+
+
 def main() -> int:
     event_path = Path(os.environ["GITHUB_EVENT_PATH"])
     event = json.loads(event_path.read_text(encoding="utf-8"))
@@ -149,12 +205,8 @@ def main() -> int:
     branch_prefix = str(CONFIG.get("worktrees", {}).get("branch_prefix", "work")).rstrip("/")
     failures: list[str] = []
 
-    issue_match = LINK_RE.search(body)
-    issue_number: int | None = int(issue_match.group(1)) if issue_match else None
-    if issue_number is None:
-        failures.append("PR body must contain `Refs #ISSUE`, `Fixes #ISSUE`, or `Closes #ISSUE`.")
-
-    failures += check_branch_and_body(body, head, base, integration, branch_prefix, issue_number)
+    issue_number = linked_issue(body)
+    failures += check_authorship(pr, body, head, base, integration, branch_prefix, issue_number)
     if base == production and head != integration:
         failures.append(f"Production PRs must originate from `{integration}`, not `{head}`.")
 
@@ -189,9 +241,9 @@ def main() -> int:
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
+    owner = f"Issue #{issue_number}" if issue_number is not None else "an automated dependency update"
     print(
-        f"PR metadata validation passed for Issue #{issue_number}: "
-        f"{changed_files} file(s), {changed_lines} changed line(s)."
+        f"PR metadata validation passed for {owner}: {changed_files} file(s), {changed_lines} changed line(s)."
     )
     return 0
 
