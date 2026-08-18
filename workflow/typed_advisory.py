@@ -37,9 +37,22 @@ REPORT = ROOT / "artifacts" / "ci" / "typed-advisory-findings.json"
 # not cross it, so every finding was dropped silently whenever mypy reported absolute
 # paths. Relative paths from `cwd=ROOT` hid that.
 FINDING = re.compile(r"^(?P<path>.+?):(?P<line>\d+): error: (?P<message>.*?)(?:\s+\[(?P<code>[\w-]+)\])?$")
-# A package that is present only when the interpreter carries the runtime dependencies.
-# Its absence means this check would report on stub-free code and call that success.
-WITNESS = "chromadb"
+
+
+def witness() -> str:
+    """A package present only when the interpreter carries the runtime dependencies.
+
+    Its absence means this check would report on stub-free code and call that success, so the
+    witness exists to make that silence loud. Which package plays the part is the consumer's
+    to say -- it was `chromadb` here, written into a module a control plane means to hand to
+    other repositories (Issue #93). A consumer with no runtime dependencies declares none and
+    the check skips, saying so.
+    """
+    try:
+        config = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(config.get("project", {}).get("typed_advisory_witness", ""))
 
 
 def parse(output: str) -> list[dict[str, str]]:
@@ -66,9 +79,12 @@ def sees_runtime_types(interpreter: str) -> bool:
     third-party types, no findings, green forever, which is precisely the regression this
     check is supposed to make impossible.
     """
+    name = witness()
+    if not name:
+        return False
     try:
         completed = subprocess.run(
-            [interpreter, "-c", f"import {WITNESS}"],
+            [interpreter, "-c", f"import {name}"],
             capture_output=True,
             timeout=60,
         )
@@ -104,9 +120,14 @@ def main() -> int:
     # interpreter, so `Path.resolve()` makes two distinct environments compare equal and
     # the check fired on every CI run; and identity was only ever a proxy for the thing
     # that matters, which is whether the runtime types are actually visible. Ask that.
+    if not witness():
+        return broken(
+            "no project.typed_advisory_witness is configured, so there is nothing to prove "
+            "the interpreter carries runtime types and a silent result cannot be trusted"
+        )
     if not sees_runtime_types(interpreter):
         return broken(
-            f"{interpreter} cannot import {WITNESS}, so mypy would check against no "
+            f"{interpreter} cannot import {witness()}, so mypy would check against no "
             "third-party types and report success regardless"
         )
 

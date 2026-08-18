@@ -435,6 +435,114 @@ def test_every_shipped_stage_runs_something():
     assert self_test.check_stage_commands(config) == []
 
 
+# Issue #93. The control plane is being extracted into a standalone repository, and seven
+# generic modules named this product directly. Fixing the seven would leave the eighth free
+# to appear, so the invariant is a gate rather than a habit.
+
+PROJECT = {"project": {"package_dir": "knowledge_nexus", "typed_advisory_witness": "chromadb"}}
+
+
+def _portable(tmp_path, monkeypatch, relative: str, source: str) -> list[str]:
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(self_test, "ROOT", tmp_path)
+    monkeypatch.setattr(self_test, "tracked_files", lambda: [relative])
+    return self_test.check_no_product_names(PROJECT)
+
+
+COUPLED_SOURCES = [
+    pytest.param('PACKAGE = ROOT / "knowledge_nexus"\n', id="the-package-constant-that-was-there"),
+    pytest.param('WITNESS = "chromadb"\n', id="the-witness-constant-that-was-there"),
+    pytest.param('ASSETS = ("knowledge_nexus/web/index.html",)\n', id="a-packaged-asset-path"),
+    pytest.param("import knowledge_nexus\n", id="an-import-of-the-product"),
+]
+
+
+@pytest.mark.parametrize("source", COUPLED_SOURCES)
+def test_a_portable_module_naming_the_product_fails(tmp_path, monkeypatch, source):
+    """Each of these is a line that was actually in the tree before this Issue."""
+    failures = _portable(tmp_path, monkeypatch, "workflow/check_dependencies.py", source)
+
+    assert failures, f"coupling was not detected in {source!r}"
+    assert "read it from .claude-workflow.json" in failures[0]
+
+
+COMMENTARY_SOURCES = [
+    pytest.param('"""Explains why chromadb is pinned."""\n', id="module-docstring"),
+    pytest.param("# knowledge_nexus/web/index.html is the asset this refers to\n", id="comment"),
+    pytest.param(
+        'def f():\n    """Uses knowledge_nexus as an example."""\n    return 1\n',
+        id="function-docstring",
+    ),
+]
+
+
+@pytest.mark.parametrize("source", COMMENTARY_SOURCES)
+def test_prose_naming_the_product_is_not_coupling(tmp_path, monkeypatch, source):
+    """A module that explains a pin is not coupled to it; one that assigns it is.
+
+    Without this distinction the check is a spell-checker that fires on its own rationale,
+    and the first response to that is to delete the rationale.
+    """
+    assert _portable(tmp_path, monkeypatch, "workflow/typed_advisory.py", source) == []
+
+
+CONSUMER_FILES = [
+    pytest.param(".claude-workflow.json", id="the-config-itself"),
+    pytest.param("ci/mypy-advisory.ini", id="mypy-configuration"),
+    pytest.param("ci/requirements-ci.txt", id="ci-requirements"),
+    pytest.param("pyproject.toml", id="project-metadata"),
+    pytest.param("tests/test_pipeline.py", id="product-tests"),
+]
+
+
+@pytest.mark.parametrize("relative", CONSUMER_FILES)
+def test_the_consumers_own_files_may_name_the_product(tmp_path, monkeypatch, relative):
+    """`.claude-workflow.json` is where these values are supposed to live.
+
+    It also starts with `.claude`, which a bare prefix test matched -- the check reported the
+    configuration file for holding the configuration.
+    """
+    assert _portable(tmp_path, monkeypatch, relative, 'name = "knowledge_nexus"\n') == []
+
+
+def test_the_shipped_control_plane_names_no_product():
+    """The regression this Issue exists for, against the real tree."""
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+
+    assert self_test.check_no_product_names(config) == []
+
+
+def test_the_check_is_inert_without_a_configured_name():
+    """A consumer that declares no package must not have every file reported."""
+    assert self_test.check_no_product_names({"project": {}}) == []
+
+
+def test_the_control_plane_executables_do_not_include_the_consumers():
+    """A copy without an `ops/` directory failed `check_executables` on day one."""
+    assert not any(name.startswith("ops/") for name in self_test.CONTROL_PLANE_EXECUTABLES)
+    assert "ops/healthcheck" in self_test.executables(
+        PROJECT | {"project": {"executables": ["ops/healthcheck"]}}
+    )
+
+
+def test_flow_init_has_the_file_it_reads():
+    """`flow init` is the first command an adopter runs, and it raised FileNotFoundError."""
+    assert (self_test.ROOT / ".gitignore.claude-ci").is_file()
+
+
+def test_the_token_control_block_its_readers_expect_is_declared():
+    """Four modules read `token_control` and the shipped configuration defined none of it."""
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+
+    assert set(config["token_control"]) >= {
+        "capture_noisy_commands",
+        "session_context_max_chars",
+        "large_prompt_chars",
+    }
+
+
 @pytest.mark.parametrize("stage", ["release", "pr", "release-artifact"])
 def test_the_gate_stages_still_name_the_checks_that_matter(stage):
     """Removing a name is the honest fix for an empty group; removing the check is not.
