@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -292,28 +291,53 @@ def test_the_resolver_pattern_is_not_mistaken_for_a_bare_interpreter(line):
 # Issue #90. Two ways the self-test reported a clean gate for a check that had not run.
 
 
-def test_a_crashing_policy_checker_is_a_failure_whatever_reached_stdout(tmp_path):
+def _with_checker(tmp_path, monkeypatch, source: str) -> None:
+    (tmp_path / "workflow").mkdir(exist_ok=True)
+    (tmp_path / "workflow" / "check_workflow_policy.py").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(self_test, "ROOT", tmp_path)
+
+
+CRASHING_CHECKERS = [
+    pytest.param("import sys\nsys.exit('boom')\n", id="message-on-stderr"),
+    pytest.param("raise RuntimeError('boom')\n", id="traceback"),
+    pytest.param("import sys\nsys.exit(3)\n", id="silent-non-zero"),
+    pytest.param("import sys\nprint('chatter')\nsys.exit(1)\n", id="output-but-no-failure-lines"),
+]
+
+
+@pytest.mark.parametrize("source", CRASHING_CHECKERS)
+def test_a_crashing_policy_checker_is_a_failure_whatever_reached_stdout(tmp_path, monkeypatch, source):
     """Failures were harvested only from lines starting with `failure:`.
 
     A checker that raised contributed none of those -- its traceback went to stderr -- so
     `failures` stayed empty and `self_test` returned 0. `workflow_self_test` is the first
-    command in the fast gate, which made this the widest of the fail-open defects.
+    command in the fast gate, which made this the widest of the fail-open defects
+    (Issue #90).
 
-    The harvest is reproduced here rather than driven through `main`, which would need a
-    whole repository laid out in a tmpdir to reach line 483.
+    Driven through `check_workflow_policy` against a substitute checker. The first version of
+    this test asserted that a phrase appeared in `self_test.py`, which a comment would have
+    satisfied -- it was vacuous, and would have passed against the unfixed code.
     """
-    checker = tmp_path / "check_workflow_policy.py"
-    checker.write_text("import sys\nsys.exit('boom')\n", encoding="utf-8")
-    policy = subprocess.run([sys.executable, str(checker)], capture_output=True, text=True, encoding="utf-8")
+    _with_checker(tmp_path, monkeypatch, source)
 
-    assert policy.returncode != 0
-    reported = [line for line in policy.stdout.splitlines() if line.startswith("failure:")]
-    assert reported == [], "a crash must not be reportable through the failure: channel"
+    failures = self_test.check_workflow_policy()
 
-    source = (self_test.ROOT / "workflow" / "self_test.py").read_text(encoding="utf-8")
-    assert "without reporting a" in source, (
-        "self_test must synthesise a failure when the checker exits non-zero silently"
-    )
+    assert failures, "a checker that exited non-zero was reported as no findings"
+    assert "did not complete" in failures[0]
+
+
+def test_a_reported_failure_is_passed_through_unchanged(tmp_path, monkeypatch):
+    """The synthesised failure must not displace real findings when the checker reports some."""
+    _with_checker(tmp_path, monkeypatch, "import sys\nprint('failure: a real finding')\nsys.exit(1)\n")
+
+    assert self_test.check_workflow_policy() == ["failure: a real finding"]
+
+
+def test_a_passing_policy_checker_still_reports_nothing(tmp_path, monkeypatch):
+    """The other direction: exit 0 must not become a failure now that every non-zero is one."""
+    _with_checker(tmp_path, monkeypatch, "")
+
+    assert self_test.check_workflow_policy() == []
 
 
 DENY_RULES_THE_WRITTEN_POLICY_REQUIRES = [

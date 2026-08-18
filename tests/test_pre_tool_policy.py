@@ -1125,6 +1125,12 @@ PUSHES_THAT_MUST_BE_REFUSED = [
     # A deletion writes the destination too, and writes nothing to it.
     pytest.param("git push origin :dev", "work/52-x", id="deleting-the-integration-branch"),
     pytest.param("git push origin --delete master", "work/52-x", id="deleting-production-by-switch"),
+    # `statement.split()` keeps the quotes, so the token was `"dev"` -- equal to no branch
+    # name and matching no protected one. This was open before Issue #90 too; the rewrite
+    # closes it rather than carrying it forward.
+    pytest.param('git push origin "dev"', "work/52-x", id="double-quoted-integration"),
+    pytest.param("git push origin 'master'", "work/52-x", id="single-quoted-production"),
+    pytest.param('git push origin "HEAD:refs/heads/dev"', "work/52-x", id="quoted-qualified-destination"),
 ]
 
 
@@ -1153,6 +1159,8 @@ PUSHES_THAT_MUST_BE_ALLOWED = [
     pytest.param("git push origin HEAD:refs/heads/work/18-x", "dev", id="qualified-task-destination"),
     pytest.param("git push origin work/52-x:refs/heads/work/52-x", "dev", id="qualified-both-halves"),
     pytest.param("git push origin work/52-x --dry-run", "dev", id="switch-after-the-refspec"),
+    pytest.param('git push origin "work/52-x"', "dev", id="quoted-task-branch"),
+    pytest.param("git push origin 'work/52-x' 2>&1 | tail -2", "dev", id="quoted-task-branch-then-a-pipe"),
 ]
 
 
@@ -1201,6 +1209,8 @@ FORCE_PUSHES_SPELLED_WITH_A_PLUS = [
     pytest.param("git push origin +work/52-x", id="onto-a-task-branch"),
     pytest.param("git push origin +refs/heads/master", id="onto-qualified-production"),
     pytest.param("git push origin +HEAD:dev", id="on-a-colon-refspec"),
+    pytest.param('git push origin "+dev"', id="quoted-plus-onto-integration"),
+    pytest.param("git push origin '+work/52-x'", id="quoted-plus-onto-a-task-branch"),
 ]
 
 
@@ -1228,6 +1238,89 @@ def test_a_forced_protected_push_is_refused_by_both_rules_independently(root, mo
     _on_branch(monkeypatch, "work/52-x")
     assert pre_tool_policy.protected_push(root, "git push origin +dev") is not None
     assert pre_tool_policy.forced_push("git push origin +dev") is not None
+
+
+# Issue #90, fourth iteration. Three previous fixes to this guard each closed one spelling
+# and left the next, because each was a spot fix to a scanner rather than a parser. The push
+# is now parsed -- git invocation, global options, push options that consume a value,
+# refspecs -- and this corpus is the contract that parse has to keep. Add a spelling here
+# before changing the parser, not after.
+
+PUSHES_THE_PARSER_MUST_REFUSE = [
+    # Writes every branch there is while naming none, so every refspec rule was blind to it.
+    pytest.param("git push --mirror origin", "work/52-x", id="mirror"),
+    pytest.param("git push --all origin", "work/52-x", id="all-branches"),
+    # A switch that takes a separate word: its value was eaten as the remote, the real remote
+    # became a phantom refspec, and the push stopped counting as bare.
+    pytest.param("git push -o ci.skip origin", "dev", id="push-option-with-value"),
+    pytest.param("git push --push-option ci.skip origin", "dev", id="long-push-option"),
+    pytest.param("git push --receive-pack /x origin", "dev", id="receive-pack-with-value"),
+    pytest.param("git push --repo origin origin", "dev", id="repo-with-value"),
+    # The invocation itself, which every rule spelled as two literal words.
+    pytest.param("git.exe push origin dev", "work/52-x", id="windows-executable"),
+    pytest.param("/usr/bin/git push origin dev", "work/52-x", id="absolute-path"),
+    pytest.param("git -C . push origin dev", "work/52-x", id="global-option-with-value"),
+    pytest.param(
+        "git -c remote.origin.push=HEAD:refs/heads/dev push origin", "dev", id="config-driven-refspec"
+    ),
+    # A refspec may be a glob, which equals no branch name and matches them all.
+    pytest.param("git push origin refs/heads/*:refs/heads/*", "work/52-x", id="glob-refspec"),
+    pytest.param("git push origin '*:*'", "work/52-x", id="bare-glob-refspec"),
+    # `-f` survives bundling.
+    pytest.param("git push -fu origin work/52-x", "work/52-x", id="bundled-force"),
+    # Only the first push was ever read.
+    pytest.param(
+        "git push origin work/52-x && git push origin dev", "work/52-x", id="second-push-in-a-chain"
+    ),
+]
+
+
+@pytest.mark.parametrize(("command", "on"), PUSHES_THE_PARSER_MUST_REFUSE)
+def test_the_parser_refuses_every_spelling_that_reaches_a_protected_branch(root, monkeypatch, command, on):
+    _on_branch(monkeypatch, on)
+    assert pre_tool_policy.command_violation(root, command) is not None, command
+
+
+PUSHES_THE_PARSER_MUST_ALLOW = [
+    pytest.param("git push -o ci.skip origin work/52-x", "dev", id="push-option-then-a-real-refspec"),
+    pytest.param("git push --tags origin work/52-x", "dev", id="tags-with-a-task-branch"),
+    pytest.param("git.exe push origin work/52-x", "dev", id="windows-executable-task-branch"),
+    pytest.param("git -C . push origin work/52-x", "dev", id="global-option-task-branch"),
+    # The parser must not turn every mention of the word into a push.
+    pytest.param("git log --grep=push", "dev", id="log-mentioning-push"),
+    pytest.param("git commit -m 'refactor the push guard'", "work/52-x", id="commit-message-mentioning-push"),
+    pytest.param("git status", "dev", id="an-unrelated-subcommand"),
+]
+
+
+@pytest.mark.parametrize(("command", "on"), PUSHES_THE_PARSER_MUST_ALLOW)
+def test_the_parser_does_not_over_refuse(root, monkeypatch, command, on):
+    """The direction that breaks working sessions, and the one Issue #87's first fix got wrong."""
+    _on_branch(monkeypatch, on)
+    assert pre_tool_policy.command_violation(root, command) is None, command
+
+
+PUSH_ARGUMENTS = [
+    ("git push origin dev", ["origin", "dev"]),
+    ("git.exe push origin dev", ["origin", "dev"]),
+    ("git -C . push origin dev", ["origin", "dev"]),
+    ("git -c a.b=c push origin", ["origin"]),
+    ("/usr/bin/git push", []),
+    ("git log --grep=push", None),
+    ("git status", None),
+    ("echo push", None),
+]
+
+
+@pytest.mark.parametrize(("command", "expected"), PUSH_ARGUMENTS)
+def test_the_push_invocation_is_walked_not_pattern_matched(command, expected):
+    assert pre_tool_policy.push_arguments(command) == expected
+
+
+def test_every_push_in_a_chain_is_parsed():
+    """`GIT_PUSH.search` returned one match, so a chain was judged on its first half alone."""
+    pushes = pre_tool_policy.parsed_pushes("git push origin work/52-x && git push origin dev")
+    assert [refs for refs, _ in pushes] == [["work/52-x"], ["dev"]]
 
 
 DESTINATIONS = [

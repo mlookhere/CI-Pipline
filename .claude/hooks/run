@@ -123,4 +123,21 @@ if [[ -z "$PY" || ! -x "$PY" ]]; then
   fi
 fi
 
-exec "$PY" "$@"
+# Not `exec`: the hook's own exit status has to be corrected before it is returned. A hook
+# that dies before its handler installs -- a syntax error, a failed import, an interpreter
+# killed by the OS -- exits 1, and on PreToolUse 1 is a *non-blocking* error, so the command
+# the hook exists to refuse runs anyway. guarded_main in pre_tool_policy.py covers exceptions
+# raised inside main(); it cannot cover a module that never finished importing (Issue #90).
+#
+# So any unexpected failure is remapped to this hook's own blocking status. For the hooks
+# where FAIL is 1 this changes nothing; for the two that deny things it is the difference
+# between refusing and shrugging. 2 is passed through untouched -- it is a deliberate denial,
+# not a failure.
+"$PY" "$@"
+STATUS=$?
+if [[ "$STATUS" -ne 0 && "$STATUS" -ne 2 ]]; then
+  echo "hook runner: ${HOOK##*/} exited $STATUS before deciding, so it did not evaluate this call." >&2
+  echo "hook runner: repository policy hooks are NOT enforcing." >&2
+  exit "$FAIL"
+fi
+exit "$STATUS"
