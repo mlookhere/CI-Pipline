@@ -433,9 +433,15 @@ def check_stage_commands(config: dict) -> list[str]:
 def collect_warnings(config: dict) -> list[str]:
     warnings = []
     command_groups = config.get("commands", {})
-    for critical in ("unit", "build"):
-        if not command_groups.get(critical):
-            warnings.append(f"command group {critical!r} is empty; configure it before relying on CI")
+    if not command_groups.get("unit"):
+        warnings.append("command group 'unit' is empty; configure it before relying on CI")
+    # `build` only when there is something to build, the way `migration` and `image_build`
+    # below are conditional on tracked migrations and a Dockerfile. A vendored control plane
+    # ships no distribution and correctly names `build` in no stage; warning about it on every
+    # green run taught the reader to skip the output, and kept a command group alive in this
+    # repository's own configuration for no reason but to silence the warning (Issue #11).
+    if config.get("project", {}).get("package_dir") and not command_groups.get("build"):
+        warnings.append("command group 'build' is empty; configure it before relying on CI")
     if tracked_migration_paths() and not command_groups.get("migration"):
         warnings.append("migration paths exist but the migration command group is empty")
     if (ROOT / "Dockerfile").exists() and not command_groups.get("image_build"):

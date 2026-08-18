@@ -822,3 +822,30 @@ def test_every_module_that_imports_the_stream_fix_calls_it_first():
             offenders.append(relative)
 
     assert offenders == [], f"these call use_utf8_streams() late or not at all: {offenders}"
+
+
+def test_a_repository_with_no_package_is_not_warned_about_build():
+    """A warning on every green run is how a repository teaches people to skip its output.
+
+    It also kept a `build` group alive in this repository's own configuration for no reason
+    but to silence itself -- config written around a check rather than because anything wanted
+    it, which is the shape the plane exists to catch (Issue #11).
+    """
+    assert self_test.collect_warnings({"project": {}, "commands": {"unit": ["pytest"]}}) == []
+
+
+def test_a_repository_with_a_package_still_is():
+    assert any(
+        "'build'" in warning
+        for warning in self_test.collect_warnings(
+            {"project": {"package_dir": "demo"}, "commands": {"unit": ["pytest"]}}
+        )
+    )
+
+
+def test_the_shipped_configuration_warns_about_nothing():
+    """Whatever the rule is, this repository must satisfy it without a placeholder group."""
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+
+    assert self_test.collect_warnings(config) == []
+    assert "build" not in config["commands"], "the group only ever existed to silence the warning"
