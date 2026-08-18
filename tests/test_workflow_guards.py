@@ -725,3 +725,48 @@ def test_each_dependabot_ecosystem_declares_the_labels_its_own_files_require(eco
         f"{ecosystem} touches {ECOSYSTEM_PATHS[ecosystem]}, which requires "
         f"{sorted(required)}; it declares {sorted(declared[ecosystem])}"
     )
+
+
+# The pull_request_target event types that cannot change what the control Issue renders, and
+# that fire in bursts. `./flow pr` creates a pull request and then adds its risk labels, so
+# `opened` plus two `labeled` events arrive within about three seconds; under the sync job's
+# cancel-in-progress group the first two runs are cancelled, and a cancelled run is reported
+# on the pull request as a failed check (Issue #24).
+POINTLESS_SYNC_TRIGGERS = ("labeled", "unlabeled", "synchronize")
+
+
+def test_the_control_sync_does_not_run_on_events_it_cannot_react_to():
+    """A trigger that cannot change the output is a red check bought for nothing.
+
+    `claude_flow.open_issues_and_prs` asks GitHub for a pull request's number, title,
+    headRefName, baseRefName, url and statusCheckRollup. Not its labels. So labelling a pull
+    request cannot alter a single cell of the rendered table, and `synchronize` only ever
+    anticipates a check result that the `workflow_run` trigger reports accurately once the
+    run finishes.
+    """
+    workflow = (self_test.ROOT / ".github" / "workflows" / "sync-control.yml").read_text(encoding="utf-8")
+    block = re.search(r"(?ms)^  pull_request_target:\n(.*?)^  \w", workflow)
+    assert block, "pull_request_target trigger not found"
+    declared = re.search(r"(?m)^\s*types:\s*\[(.+?)\]", block.group(1))
+    assert declared, "pull_request_target declares no explicit types, so it fires on all of them"
+    types = {value.strip() for value in declared.group(1).split(",")}
+
+    offenders = sorted(types & set(POINTLESS_SYNC_TRIGGERS))
+    assert offenders == [], (
+        f"sync-control.yml reacts to {offenders}, which cannot change the control Issue body; "
+        "each one is a cancelled run reported as a failed check"
+    )
+
+
+def test_the_control_renderer_still_does_not_read_pull_request_labels():
+    """The other half of the reasoning above, asserted where it would actually change.
+
+    If the renderer ever starts reading a pull request's labels, the trigger list has to grow
+    back, and the test above would then be enforcing a stale argument.
+    """
+    source = (self_test.ROOT / "workflow" / "claude_flow.py").read_text(encoding="utf-8")
+    request = re.search(r"(?s)def open_issues_and_prs.*?pr_by_issue: dict", source)
+    assert request, "open_issues_and_prs not found in the expected shape"
+    assert "labels" not in request.group(0).split('"pr",')[-1], (
+        "the pull request query now asks for labels; sync-control.yml must react to them again"
+    )
