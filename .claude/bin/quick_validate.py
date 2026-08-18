@@ -13,6 +13,14 @@ import tomllib
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 
+# workflow/ is not an importable package, so the path is extended before the import below.
+# Same pattern as .claude/bin/capture.py, which needs the same stream fix for the same reason.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "workflow"))
+
+# E402 is suppressed for that reason alone -- the import cannot resolve until sys.path is
+# extended above.
+from bash_tools import use_utf8_streams  # noqa: E402
+
 
 def scan_secrets(text: str) -> list[str]:
     """Delegate to the hooks' shared prelude.
@@ -101,6 +109,11 @@ def scan_one(path: Path) -> tuple[list[str], list[str]]:
 
 
 def main() -> int:
+    # First statement, before argparse: this validator prints paths and findings that carry
+    # non-ASCII, and on Windows the default stdout codec is cp1252. A UnicodeEncodeError here
+    # kills the validator mid-report, so the traceback names an encoding rather than whatever
+    # it was in the middle of describing (Issue #7).
+    use_utf8_streams()
     parser = argparse.ArgumentParser()
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args()

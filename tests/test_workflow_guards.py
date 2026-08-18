@@ -790,3 +790,35 @@ def test_the_sync_group_is_scoped_to_one_trigger():
         f"sync runs in group {group.group(1)!r}, shared across triggers; an issues event can "
         "cancel the run a pull request reports"
     )
+
+
+def _first_statement_of_main(source: str) -> str | None:
+    """The first statement in `main()`, rendered, or None when there is no `main()`."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == "main" and node.body:
+            return ast.dump(node.body[0])
+    return None
+
+
+def test_every_module_that_imports_the_stream_fix_calls_it_first():
+    """Importing it and calling it late is the same bug with an alibi.
+
+    `use_utf8_streams()` has to run before anything can write, including argparse's usage
+    message and the interpreter's own traceback -- both go to a stderr that is still on the
+    locale codec if the call sits after `parse_args()`. On Windows that codec is cp1252, so
+    the process dies while reporting rather than while working, and the traceback names an
+    encoding instead of whatever it was describing (Issues #77 and #7).
+    """
+    offenders = []
+    for relative in sorted(self_test.tracked_files()):
+        # Entry points only. A test module naming the function is discussing it, not calling it.
+        if not relative.endswith(".py") or not relative.startswith(("workflow/", "ci/", ".claude/")):
+            continue
+        source = (self_test.ROOT / relative).read_text(encoding="utf-8", errors="replace")
+        if "use_utf8_streams" not in source or "def main" not in source:
+            continue
+        first = _first_statement_of_main(source)
+        if first is None or "use_utf8_streams" not in first:
+            offenders.append(relative)
+
+    assert offenders == [], f"these call use_utf8_streams() late or not at all: {offenders}"
