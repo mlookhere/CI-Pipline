@@ -304,6 +304,39 @@ def check_labels(config: dict) -> list[str]:
     return failures
 
 
+# Groups a stage may name while defining no commands for them, because `ci/run.py` runs them
+# from code rather than from config. `quality` becomes the `__QUALITY__` sentinel at
+# `ci/run.py:126-128`; an empty list there is correct rather than an oversight.
+SENTINEL_GROUPS = frozenset({"quality"})
+
+
+def check_stage_commands(config: dict) -> list[str]:
+    """A stage may not name a command group that runs nothing.
+
+    `ci/run.py` expands a stage into its groups and skips an empty one in silence, so a name
+    written into a stage as a statement of intent and never filled in reported success
+    forever. The `release` stage named eleven groups and seven were empty lists, which meant
+    the required "Full regression and production build" check passed having run no
+    vulnerability scan, no licence check, no clean install, no SBOM and no packaging step
+    (Issue #92).
+
+    A failure rather than a warning, deliberately: `collect_warnings` below is exactly what
+    let this survive, because a warning is a thing a green gate prints. Every empty group now
+    has to be either implemented or removed from the stage that claims it.
+    """
+    failures = []
+    commands = config.get("commands", {})
+    for stage, groups in sorted(config.get("stages", {}).items()):
+        empty = [group for group in groups if group not in SENTINEL_GROUPS and not commands.get(group)]
+        if empty:
+            failures.append(
+                f".claude-workflow.json: stage {stage!r} runs nothing for "
+                f"{', '.join(repr(group) for group in empty)}; implement the group or remove "
+                "it from the stage"
+            )
+    return failures
+
+
 def collect_warnings(config: dict) -> list[str]:
     warnings = []
     command_groups = config.get("commands", {})
@@ -535,6 +568,7 @@ def main() -> int:
     failures += check_executables()
     failures += check_pr_template()
     failures += check_labels(config)
+    failures += check_stage_commands(config)
     warnings += collect_warnings(config)
     failures += check_tracked_artifacts()
     failures += check_subprocess_decoding()

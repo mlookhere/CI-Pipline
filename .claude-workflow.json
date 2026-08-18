@@ -139,14 +139,20 @@
     "coverage": [
       "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=knowledge_nexus --cov-report=term --cov-fail-under=70"
     ],
-    "clean_install": [],
-    "vulnerability": [],
-    "license": [],
-    "sbom": [],
+    "clean_install": [
+      "\"$CI_PYTHON\" workflow/clean_install.py --dist artifacts/dist --package knowledge_nexus"
+    ],
+    "sbom": [
+      "mkdir -p artifacts/release",
+      "\"$CI_PYTHON\" -m cyclonedx_py requirements requirements.txt --output-format JSON --output-file artifacts/release/sbom.cdx.json"
+    ],
     "accessibility": [],
     "performance_smoke": [],
     "dead_code": [],
-    "package_release": [],
+    "package_release": [
+      "mkdir -p artifacts/release",
+      "cp artifacts/dist/*.whl artifacts/dist/*.tar.gz artifacts/release/"
+    ],
     "workflow_self_test": [
       "\"$CI_PYTHON\" workflow/self_test.py --ci"
     ],
@@ -168,30 +174,17 @@
     ],
     "pr": [
       "unit",
-      "integration",
       "coverage",
-      "generated_check",
       "build"
     ],
     "release": [
       "security",
-      "vulnerability",
-      "license",
       "unit",
-      "integration",
       "coverage",
-      "generated_check",
-      "clean_install",
       "build",
+      "clean_install",
       "package_release",
       "sbom"
-    ],
-    "migrations": [
-      "migration"
-    ],
-    "e2e": [
-      "e2e",
-      "accessibility"
     ],
     "deploy-development": [
       "deploy_development",
@@ -216,13 +209,11 @@
       "unit",
       "coverage",
       "build",
-      "mutation",
-      "property",
-      "flake",
-      "dead_code",
-      "performance_smoke"
+      "clean_install",
+      "sbom"
     ],
     "release-artifact": [
+      "build",
       "package_release",
       "sbom"
     ],

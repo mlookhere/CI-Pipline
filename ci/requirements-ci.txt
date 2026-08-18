@@ -7,3 +7,7 @@ lizard>=1.17
 detect-secrets>=1.5
 pip-audit>=2.7
 build>=1.2
+# Generates the SBOM that goes into the signed release bundle. The `sbom` group named this
+# capability and ran nothing until Issue #92, so the bundle deploy-production verifies had no
+# inventory of what it contained.
+cyclonedx-bom>=4.1
