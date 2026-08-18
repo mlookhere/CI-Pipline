@@ -4,9 +4,18 @@ on:
   issues:
     types: [opened, edited, labeled, unlabeled, closed, reopened]
   pull_request_target:
-    types: [opened, synchronize, reopened, closed, labeled, unlabeled, ready_for_review, converted_to_draft]
+    # Lifecycle only. `labeled`, `unlabeled` and `synchronize` were here and could not change
+    # what this workflow renders: `open_issues_and_prs` reads a pull request's number, title,
+    # headRefName, baseRefName, url and statusCheckRollup, and never its labels, while check
+    # status arrives accurately through the `workflow_run` trigger below rather than on push.
+    # What they did do was fire three events in three seconds every time `./flow pr` created a
+    # pull request and then added its risk labels, so the first two runs were cancelled by the
+    # third -- and a cancelled run is reported as a failed check (Issue #24).
+    types: [opened, reopened, closed, ready_for_review, converted_to_draft]
   workflow_run:
-    workflows: ["PR CI", "Release gate", "Build and attest release", "Deploy development", "Deploy production", "Roll back production"]
+    # Only the workflows this repository actually has. A name here that matches nothing
+    # never fires, so a stale entry is a trigger that silently does not exist.
+    workflows: ["PR CI", "Release gate"]
     types: [completed]
   workflow_dispatch:
 
@@ -39,7 +48,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Check out only the protected default branch
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -67,7 +76,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Check out only the protected default branch
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false

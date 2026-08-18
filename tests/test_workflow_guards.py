@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +21,11 @@ sys.path.insert(0, str(ROOT / "workflow"))
 # E402: `workflow/` is not an importable package, so sys.path has to be extended first.
 # Suppressed for that reason alone, matching tests/test_workflow_policy.py.
 import self_test  # noqa: E402
+import validate_pr  # noqa: E402
+from check_workflow_policy import job_blocks  # noqa: E402
+
+# A job carrying this marker reports rather than gates, so it is not a required check.
+ADVISORY_MARKER = "# gating: no"
 
 
 def _rejects(source: str) -> bool:
@@ -543,19 +549,224 @@ def test_the_token_control_block_its_readers_expect_is_declared():
     }
 
 
-@pytest.mark.parametrize("stage", ["release", "pr", "release-artifact"])
+@pytest.mark.parametrize("stage", ["release", "pr", "nightly", "audit"])
 def test_the_gate_stages_still_name_the_checks_that_matter(stage):
     """Removing a name is the honest fix for an empty group; removing the check is not.
 
-    `release` lost `vulnerability` because `security` already runs pip-audit, and lost
-    `integration` and `generated_check` because neither exists here. It must not have lost
-    the ones that were implemented instead.
+    The stages here lost `build`, `clean_install`, `package_release`, `sbom` and
+    `dependency_sync` because this repository has no distribution to build and building one
+    is not what a vendored control plane is for. They must not lose the ones that can run.
     """
     config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
     required = {
-        "release": {"security", "unit", "coverage", "build", "clean_install", "package_release", "sbom"},
-        "pr": {"unit", "coverage", "build"},
-        "release-artifact": {"package_release", "sbom"},
+        "release": {"security", "unit", "coverage"},
+        "pr": {"unit", "coverage"},
+        "nightly": {"security", "unit", "coverage"},
+        "audit": {"security"},
     }
 
     assert required[stage] <= set(config["stages"][stage])
+
+
+# ---------------------------------------------------------- how the gates are wired up
+#
+# These moved here from tests/test_dependencies.py with the extraction. They never were
+# about dependency declarations -- they are about whether a job that runs is a job that
+# blocks, which is the same question `check_stage_commands` above asks of a stage.
+
+
+def _pr_workflow() -> str:
+    return (self_test.ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
+
+
+def _config() -> dict:
+    return json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+
+
+def test_a_dependency_audit_runs_on_every_pull_request():
+    """Before this, findings surfaced only at release -- weeks after the change."""
+    assert "security" in _config()["stages"]["audit"]
+
+
+def test_the_audit_stage_has_a_job_on_the_pull_request_workflow():
+    """A stage nothing invokes is a stage that never runs."""
+    workflow = _pr_workflow()
+    assert "./ci/run audit" in workflow
+    assert "pull_request" in workflow
+
+
+def test_the_audit_blocks_rather_than_reports():
+    """`continue-on-error` or a `|| true` would make this advisory, which it is not.
+
+    The job body is located by parsing rather than by slicing between two literals:
+    slicing assumed `audit` precedes `pr-tests`, and reordering them would have made the
+    slice empty and this assertion vacuous.
+    """
+    blocks = dict(job_blocks(_pr_workflow()))
+    assert "audit" in blocks, sorted(blocks)
+    assert "continue-on-error" not in blocks["audit"]
+    assert all("||" not in command for command in _config()["commands"]["security"])
+
+
+def test_the_audit_does_not_fall_back_past_strict():
+    """`pip-audit --strict || pip-audit` re-runs without --strict and masks the failure."""
+    commands = _config()["commands"]["security"]
+    assert commands == ["pip-audit -r ci/requirements-ci.txt --strict"], commands
+
+
+def test_every_pull_request_job_is_a_required_check():
+    """A job that runs but is not required is a check that reports, not one that blocks.
+
+    Easy to get wrong in the direction that does not announce itself: adding a gating job
+    and forgetting this list leaves a check whose failure stops nothing, and removing a job
+    without removing its name leaves a required check that never reports, which blocks
+    every merge instead. Both are silent until a pull request is already open.
+    """
+    required = _config()["github"]["branch_protection"]["integration"]["required_checks"]
+    gating = {}
+    for job, body in job_blocks(_pr_workflow()):
+        named = re.search(r"(?m)^    name: (.+?)\s*$", body)
+        # An advisory job reports and never fails, so requiring it would be meaningless.
+        # Recognised by an explicit marker, not by its name or by what its comments
+        # happen to mention: matching on 'advisory' anywhere would silently drop a
+        # gating job called 'Security advisory scan' from this check.
+        advisory = ADVISORY_MARKER in body
+        if named and not advisory:
+            gating[job] = named.group(1)
+    assert gating, "no gating job names found; this test is pinned to the wrong shape"
+    missing = [name for name in gating.values() if name not in required]
+    assert missing == [], f"jobs that run but do not gate: {missing}"
+
+
+def test_the_fast_gate_stays_hermetic():
+    """The advisory config exists so this setting never has to be relaxed.
+
+    Relaxing `no_site_packages` to "fix" a typed finding stops the fast gate being
+    reproducible, and one third-party release shipping stubs for a newer Python then
+    collapses the whole typecheck into a single unrelated parse error.
+    """
+    pyproject = (self_test.ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "no_site_packages = true" in pyproject
+    advisory = (self_test.ROOT / "ci" / "mypy-advisory.ini").read_text(encoding="utf-8")
+    # The setting, not the word: the advisory config explains the trade-off in a comment,
+    # and an assertion that cannot tell those apart is one that fails for the wrong reason.
+    settings = [line for line in advisory.splitlines() if not line.lstrip().startswith("#")]
+    assert not any("no_site_packages" in line for line in settings), (
+        "the advisory config must see third-party types"
+    )
+
+
+def test_no_gating_stage_uses_the_advisory_config():
+    """The advisory config must never become the one a blocking stage runs.
+
+    Empty here rather than `{"typed-advisory"}`: this repository has no third-party runtime
+    dependencies to witness, so it runs the advisory check nowhere at all. The assertion is
+    kept because what it forbids is what matters -- the advisory config reaching a stage
+    that gates -- and that stays forbidden whether or not one runs it at all.
+    """
+    config = _config()
+    using = {
+        stage
+        for stage, groups in config["stages"].items()
+        for group in groups
+        if any(
+            "mypy-advisory" in command or "typed_advisory" in command
+            for command in config["commands"].get(group) or []
+        )
+    }
+    assert using == set(), using
+
+
+# The files each Dependabot ecosystem will actually edit. Written out rather than inferred,
+# because what a `directory:` resolves to is ecosystem-specific and guessing it would make
+# this test agree with a wrong answer.
+ECOSYSTEM_PATHS = {
+    "pip": ("ci/requirements-ci.txt",),
+    "github-actions": (".github/workflows/ci-pr.yml",),
+}
+
+
+def _declared_ecosystems() -> dict[str, set[str]]:
+    """`package-ecosystem` to the labels it declares, read from the shipped dependabot config."""
+    text = (self_test.ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    starts = [match.start() for match in re.finditer(r"(?m)^\s*-\s*package-ecosystem\s*:", text)]
+    found = {}
+    for index, start in enumerate(starts):
+        block = text[start : starts[index + 1] if index + 1 < len(starts) else len(text)]
+        name = re.search(r"package-ecosystem\s*:\s*[\"']?([^\"'\s#]+)", block)
+        labels = set(re.findall(r"(?m)^\s*-\s*[\"']([a-z]+:[a-z-]+)[\"']\s*$", block))
+        if name:
+            found[name.group(1)] = labels
+    return found
+
+
+@pytest.mark.parametrize("ecosystem", sorted(ECOSYSTEM_PATHS))
+def test_each_dependabot_ecosystem_declares_the_labels_its_own_files_require(ecosystem):
+    """A bot cannot relabel its pull request after the fact, so the config is the only chance.
+
+    `ci/requirements-ci.txt` is matched by `ci/**` as well as by its own `risk:dependencies`
+    entry, and the pip ecosystem declared only the latter. Every weekly update therefore
+    opened a pull request that failed `PR metadata` for a missing `risk:ci` and could never be
+    made to pass -- Dependabot does not add labels later, and a human editing them is a human
+    doing the bot's job every week.
+    """
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    risk_paths = config["github"]["risk_paths"]
+    required = {
+        label
+        for label, patterns in risk_paths.items()
+        for path in ECOSYSTEM_PATHS[ecosystem]
+        if validate_pr.path_requires_label(path, list(patterns))
+    }
+    declared = _declared_ecosystems()
+
+    assert ecosystem in declared, sorted(declared)
+    assert required <= declared[ecosystem], (
+        f"{ecosystem} touches {ECOSYSTEM_PATHS[ecosystem]}, which requires "
+        f"{sorted(required)}; it declares {sorted(declared[ecosystem])}"
+    )
+
+
+# The pull_request_target event types that cannot change what the control Issue renders, and
+# that fire in bursts. `./flow pr` creates a pull request and then adds its risk labels, so
+# `opened` plus two `labeled` events arrive within about three seconds; under the sync job's
+# cancel-in-progress group the first two runs are cancelled, and a cancelled run is reported
+# on the pull request as a failed check (Issue #24).
+POINTLESS_SYNC_TRIGGERS = ("labeled", "unlabeled", "synchronize")
+
+
+def test_the_control_sync_does_not_run_on_events_it_cannot_react_to():
+    """A trigger that cannot change the output is a red check bought for nothing.
+
+    `claude_flow.open_issues_and_prs` asks GitHub for a pull request's number, title,
+    headRefName, baseRefName, url and statusCheckRollup. Not its labels. So labelling a pull
+    request cannot alter a single cell of the rendered table, and `synchronize` only ever
+    anticipates a check result that the `workflow_run` trigger reports accurately once the
+    run finishes.
+    """
+    workflow = (self_test.ROOT / ".github" / "workflows" / "sync-control.yml").read_text(encoding="utf-8")
+    block = re.search(r"(?ms)^  pull_request_target:\n(.*?)^  \w", workflow)
+    assert block, "pull_request_target trigger not found"
+    declared = re.search(r"(?m)^\s*types:\s*\[(.+?)\]", block.group(1))
+    assert declared, "pull_request_target declares no explicit types, so it fires on all of them"
+    types = {value.strip() for value in declared.group(1).split(",")}
+
+    offenders = sorted(types & set(POINTLESS_SYNC_TRIGGERS))
+    assert offenders == [], (
+        f"sync-control.yml reacts to {offenders}, which cannot change the control Issue body; "
+        "each one is a cancelled run reported as a failed check"
+    )
+
+
+def test_the_control_renderer_still_does_not_read_pull_request_labels():
+    """The other half of the reasoning above, asserted where it would actually change.
+
+    If the renderer ever starts reading a pull request's labels, the trigger list has to grow
+    back, and the test above would then be enforcing a stale argument.
+    """
+    source = (self_test.ROOT / "workflow" / "claude_flow.py").read_text(encoding="utf-8")
+    request = re.search(r"(?s)def open_issues_and_prs.*?pr_by_issue: dict", source)
+    assert request, "open_issues_and_prs not found in the expected shape"
+    assert "labels" not in request.group(0).split('"pr",')[-1], (
+        "the pull request query now asks for labels; sync-control.yml must react to them again"
+    )

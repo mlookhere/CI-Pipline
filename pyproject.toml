@@ -1,0 +1,58 @@
+# Tool configuration only. This repository is a control plane that consumers vendor, not a
+# package anyone installs, so there is deliberately no `[project]` and no `[build-system]`
+# table -- adding either would invite `pip install -e .` back into the bootstrap and make
+# the plane something that has to be released before it can be adopted.
+#
+# The three tools below all read this file by default, which is the whole reason it exists:
+# `ruff check .`, `ruff format --check .` and a bare `mypy` are what the fast gate runs, and
+# with no configuration present each falls back to defaults that disagree with how the code
+# in this repository is written.
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+exclude = [
+    ".venv",
+    ".ci-venv",
+    "artifacts",
+    "build",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Lifecycle hooks share one prelude (`from common import *`) by design: each hook is a
+# standalone script the Claude Code runtime executes directly, and the prelude keeps them
+# short enough to stay within their execution timeouts. Scoped to the hooks directory only
+# -- star imports stay an error everywhere else.
+".claude/hooks/*.py" = ["F403", "F405"]
+# E501 is a STYLE-ONLY exemption for control-plane code written to a longer line budget. It
+# is not a quality threshold: complexity, secret and type gates all still apply to these
+# files. Currently the findings are all long message strings.
+".claude/**/*.py" = ["E501", "F403", "F405"]
+"workflow/*.py" = ["E501"]
+
+[tool.mypy]
+# The fast gate runs a bare `mypy`, so scope is pinned here rather than left to whatever
+# happens to be in the working tree.
+files = ["workflow", "ci", "tests"]
+exclude = "(?x)^(?: \\.venv | build | artifacts )/"
+python_version = "3.10"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_configs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+# Hermetic: type-check against typeshed only, never against whatever happens to be installed
+# in the CI tooling virtualenv. Without this the gate is not reproducible -- a third-party
+# release shipping inline stubs written for a newer Python is a fatal parse error under
+# `python_version = 3.10`, and mypy stops checking everything else, so the stage collapses to
+# one unrelated error and verifies nothing.
+no_site_packages = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

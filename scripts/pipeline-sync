@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+# shellcheck source=scripts/lib/python.sh
+. "$ROOT/scripts/lib/python.sh"
+exec "$(resolve_python)" workflow/pipeline_sync.py "$@"

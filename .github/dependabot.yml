@@ -1,10 +1,10 @@
 version: 2
 updates:
 # target-branch is mandatory on every ecosystem. Without it Dependabot opens
-# PRs against the repository default branch (master), which skips the PR gate
-# entirely -- ci-pr.yml only triggers on `pull_request: branches: [dev]` -- and
-# would land dependency changes on the production branch without ever passing
-# through integration. See workflow/check_workflow_policy.py, which enforces it.
+# PRs against the repository default branch, which skips the PR gate entirely --
+# ci-pr.yml only triggers on `pull_request: branches: [dev]` -- and would land
+# dependency changes on production without ever passing through integration.
+# See workflow/check_workflow_policy.py, which enforces it.
   - package-ecosystem: "github-actions"
     directory: "/"
     target-branch: "dev"
@@ -15,8 +15,16 @@ updates:
       - "type:maintenance"
       - "risk:dependencies"
       - "risk:ci"
+# The only Python manifest here is the CI tooling, and it lives in ci/ rather than
+# at the root. Pointed at "/" this ecosystem would find nothing and report nothing,
+# which reads exactly like a repository with no outdated dependencies.
+#
+# `risk:ci` as well as `risk:dependencies`, because `ci/requirements-ci.txt` is matched by
+# both `ci/**` and its own entry in `risk_paths`. An ecosystem that declares fewer labels
+# than its own files require opens pull requests that fail `PR metadata` every week and can
+# never be made to pass, since Dependabot relabels nothing after the fact.
   - package-ecosystem: "pip"
-    directory: "/"
+    directory: "/ci"
     target-branch: "dev"
     schedule:
       interval: "weekly"
@@ -24,27 +32,4 @@ updates:
     labels:
       - "type:maintenance"
       - "risk:dependencies"
-# Two pins are held on purpose and a test refuses to let either move, so a major-version
-# PR against them is a PR that cannot pass and will be reopened every week until it is
-# ignored here. chromadb is held below 1.0 for PYSEC-2026-311 / GHSA-f4j7-r4q5-qw2c, which
-# has no fixed release; posthog is held below 6 because Chroma 0.6.x calls
-# `posthog.capture(distinct_id, event, properties)` and posthog 6.0 changed that signature.
-# The reasoning lives at requirements.txt:10-27 and is enforced by
-# test_chromadb_is_held_below_the_affected_range and
-# test_posthog_is_held_where_chroma_can_call_it in tests/test_dependencies.py -- delete
-# these ignores when those tests go, and not before, so the rule cannot outlive its reason.
-# Minor and patch updates still arrive; only the major bump is suppressed.
-    ignore:
-      - dependency-name: "chromadb"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "posthog"
-        update-types: ["version-update:semver-major"]
-  - package-ecosystem: "docker"
-    directory: "/"
-    target-branch: "dev"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    labels:
-      - "type:maintenance"
-      - "risk:dependencies"
+      - "risk:ci"
