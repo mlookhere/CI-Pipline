@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -1060,6 +1061,32 @@ def cmd_pr(args: argparse.Namespace) -> int:
     return 0
 
 
+def label_release_issue(issue: int, config: dict[str, Any], base: str, head: str) -> None:
+    """Put the risk labels the release's own diff requires onto its controlling Issue.
+
+    A release aggregates every commit between the two branches, so it carries the union of
+    their risk, and `validate_pr.check_risk_labels` reads the changed paths and demands the
+    labels on both the Issue and the pull request. Nothing supplied them: `cmd_pr` labels a
+    task pull request from its Issue, and a person writing a release Issue cannot know the
+    aggregate diff before it exists. So every release failed `Release metadata` on its first
+    run and had to be hand-labelled twice and re-run (Issue #30).
+
+    Only the Issue is labelled here; `copy_risk_labels_to_pr` below already carries them on.
+    """
+    changed = output(["git", "diff", "--name-only", f"origin/{base}...origin/{head}"]).splitlines()
+    required = sorted(
+        label
+        for label, patterns in config.get("github", {}).get("risk_paths", {}).items()
+        if any(fnmatch.fnmatch(path, pattern) for path in changed for pattern in patterns)
+    )
+    if not required:
+        return
+    command = ["gh", "issue", "edit", str(issue)]
+    for label in required:
+        command.extend(["--add-label", label])
+    shell(command, check=False)
+
+
 def cmd_release(args: argparse.Namespace) -> int:
     require_gh()
     config = load_config()
@@ -1135,6 +1162,7 @@ def cmd_release(args: argparse.Namespace) -> int:
         if not created:
             fail("release PR creation succeeded but the PR could not be resolved")
         pr = created[0]
+    label_release_issue(args.issue, config, production, integration)
     copy_risk_labels_to_pr(args.issue, int(pr["number"]))
     set_issue_state(args.issue, "state:review", config)
     sync_control(config)

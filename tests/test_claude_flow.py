@@ -289,3 +289,58 @@ def test_a_stream_that_cannot_be_reconfigured_still_prints(monkeypatch):
     print(ARROW)
 
     assert stdout.getvalue() == f"{ARROW}\n"
+
+
+# ------------------------------------------------ risk labels on a release (Issue #30)
+
+RELEASE_CONFIG = {
+    "github": {
+        "risk_paths": {
+            "risk:ci": [".github/workflows/**", "ci/**"],
+            "risk:dependencies": ["ci/requirements-ci.txt"],
+            "risk:deployment": ["ops/**"],
+        }
+    }
+}
+
+
+def _labelled(monkeypatch, changed: list[str]) -> list[list[str]]:
+    issued: list[list[str]] = []
+    monkeypatch.setattr(claude_flow, "output", lambda *_, **__: "\n".join(changed))
+    monkeypatch.setattr(claude_flow, "shell", lambda command, **__: issued.append(command))
+    return issued
+
+
+def test_a_release_is_labelled_from_its_own_diff(monkeypatch):
+    """The defect: `Release metadata` refused the first release for labels nothing supplied."""
+    issued = _labelled(monkeypatch, ["ci/requirements-ci.txt", ".github/workflows/ci-pr.yml"])
+
+    claude_flow.label_release_issue(28, RELEASE_CONFIG, "master", "dev")
+
+    assert issued == [
+        ["gh", "issue", "edit", "28", "--add-label", "risk:ci", "--add-label", "risk:dependencies"]
+    ]
+
+
+def test_a_path_matching_nothing_asks_for_no_labels(monkeypatch):
+    issued = _labelled(monkeypatch, ["README.md"])
+
+    claude_flow.label_release_issue(28, RELEASE_CONFIG, "master", "dev")
+
+    assert issued == [], "an unlabelled release must not be given labels it does not need"
+
+
+def test_an_empty_diff_asks_for_no_labels(monkeypatch):
+    issued = _labelled(monkeypatch, [])
+
+    claude_flow.label_release_issue(28, RELEASE_CONFIG, "master", "dev")
+
+    assert issued == []
+
+
+def test_the_release_command_labels_before_it_copies():
+    """Order is the whole mechanism: copy_risk_labels_to_pr reads the Issue it just labelled."""
+    source = (ROOT / "workflow" / "claude_flow.py").read_text(encoding="utf-8")
+    body = source.split("def cmd_release")[1]
+
+    assert body.index("label_release_issue(") < body.index("copy_risk_labels_to_pr(")
