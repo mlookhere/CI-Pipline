@@ -1,22 +1,25 @@
-"""Runtime dependencies must be declared in exactly one place.
+"""`workflow/check_dependencies.py`, exercised without a package to point it at.
 
-`requirements.txt` and `[project].dependencies` held the same nine lines, nothing compared
-them, and only `requirements.txt` was ever audited -- so a dependency added to
-`pyproject.toml` alone would ship unscanned (Issue #16). `pyproject.toml` now reads
-`requirements.txt`, which makes the two incapable of disagreeing.
+The module keeps a consumer's runtime dependencies declared in exactly one place: a
+`requirements.txt` and a `[project].dependencies` list holding the same lines will drift,
+and only one of them is ever audited, so a dependency added to `pyproject.toml` alone ships
+unscanned. The fix it guards is delegation rather than comparison -- `pyproject.toml`
+declares its dependencies `dynamic` and reads `requirements.txt`, so the two cannot
+disagree -- and the way that breaks is not a mismatch appearing but someone re-adding a
+static list, at which point the drift is back and nothing says so.
 
-The way that breaks is not a mismatch appearing. It is someone re-adding a static list, at
-which point the drift is back and nothing says so, so that is what these tests aim at.
+This repository has no package, no `requirements.txt` and no stage that runs the module. It
+ships it for consumers that do, which is exactly why the behaviour is pinned here: the tests
+that read a real `pyproject.toml` went with the extraction, and what is left constructs
+every input it checks, so the module stays covered by a repository that cannot use it.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import sys
 import tarfile
 import zipfile
-from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
@@ -25,9 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "workflow"))
 
 from check_dependencies import (  # noqa: E402
-    DELEGATION,
     check_artifacts,
-    check_audit_target,
     check_forbidden_call_sites,
     check_packaged_assets,
     check_pyproject,
@@ -36,16 +37,8 @@ from check_dependencies import (  # noqa: E402
     main,
     normalise,
     packaged_assets,
-    quoted,
     sections,
 )
-from check_workflow_policy import job_blocks  # noqa: E402
-
-PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-REQUIREMENTS = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-CONFIG = (ROOT / ".claude-workflow.json").read_text(encoding="utf-8")
-# A job carrying this marker reports rather than gates, so it is not a required check.
-ADVISORY_MARKER = "# gating: no"
 
 DELEGATING = """[project]
 name = "demo"
@@ -56,11 +49,45 @@ dynamic = ["dependencies"]
 dependencies = { file = ["requirements.txt"] }
 """
 
+# A consumer's `project` block, supplied by the tests that need one. The rule below is the
+# one the extracted project declares, kept verbatim as the fixture because its regex is the
+# thing being pinned: it shipped once with a literal backspace where the `\\b` belonged,
+# matched nothing, and reported safety it had never checked.
+HTTP_CLIENT_RULE = {
+    "pattern": r"\b(?:Async)?HttpClient\s*\(",
+    "message": "opens the HTTP surface the pinned advisory assumes is unused",
+}
+CONSUMER_CONFIG = {
+    "commands": {"security": ["pip-audit -r requirements.txt --strict"]},
+    "stages": {"audit": ["security"]},
+}
 
-def test_this_repository_declares_dependencies_once():
-    assert check_pyproject(PYPROJECT) == []
-    assert check_requirements(REQUIREMENTS) == []
-    assert check_audit_target(CONFIG) == []
+
+def consumer(tmp_path: Path, monkeypatch, **project_fields) -> Path:
+    """A stand-in for a repository that has what this one does not, returning its package.
+
+    `check_dependencies` reads a package directory, a `pyproject.toml`, a `requirements.txt`
+    and a `project` block from the repository it runs in. This repository has none of them,
+    deliberately. Constructing them per test is what keeps these assertions about the
+    module's behaviour rather than about a repository that would have to grow a package to
+    keep them passing.
+    """
+    import check_dependencies
+
+    root = tmp_path / "consumer"
+    package = root / "demo"
+    package.mkdir(parents=True)
+    (root / "requirements.txt").write_text("fastapi>=0.110\nhttpx>=0.27\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(DELEGATING, encoding="utf-8")
+    (root / ".claude-workflow.json").write_text(json.dumps(CONSUMER_CONFIG), encoding="utf-8")
+
+    monkeypatch.setattr(check_dependencies, "ROOT", root)
+    monkeypatch.setattr(check_dependencies, "REQUIREMENTS", root / "requirements.txt")
+    monkeypatch.setattr(check_dependencies, "PYPROJECT", root / "pyproject.toml")
+    monkeypatch.setattr(check_dependencies, "CONFIG", root / ".claude-workflow.json")
+    monkeypatch.setattr(check_dependencies, "project", lambda: project_fields)
+    monkeypatch.setattr(check_dependencies, "package_dir", lambda: package)
+    return package
 
 
 def test_the_delegating_shape_passes():
@@ -189,46 +216,6 @@ def test_an_empty_requirements_file_is_rejected():
     assert any("depends on nothing" in failure for failure in check_requirements("# only a comment\n"))
 
 
-def test_an_audit_that_scans_a_different_file_is_rejected():
-    text = CONFIG.replace("pip-audit -r requirements.txt", "pip-audit -r deps.txt")
-    assert text != CONFIG, "the audit command moved; this test is pinned to stale text"
-    assert any("does not audit requirements.txt" in failure for failure in check_audit_target(text))
-
-
-def test_removing_the_audit_entirely_is_rejected():
-    config = json.loads(CONFIG)
-    config["commands"]["security"] = ["echo nothing to see"]
-    assert any("runs no pip-audit" in failure for failure in check_audit_target(json.dumps(config)))
-
-
-def test_an_audit_no_stage_runs_is_rejected():
-    """A correct command that nothing invokes audits nothing, and looks the same from here."""
-    config = json.loads(CONFIG)
-    for groups in config["stages"].values():
-        while "security" in groups:
-            groups.remove("security")
-    failures = check_audit_target(json.dumps(config))
-    assert any("no stage runs the security group" in failure for failure in failures)
-
-
-def test_the_pr_gate_builds_a_source_distribution():
-    """The sdist is where a dynamic dependency source goes missing, and only at release.
-
-    setuptools does include a file referenced by [tool.setuptools.dynamic] without a
-    MANIFEST.in, but nothing was proving that on every pull request.
-    """
-    config = json.loads(CONFIG)
-    assert any("--sdist" in command for command in config["commands"]["build"])
-    assert "build" in config["stages"]["pr"]
-
-
-def test_the_check_runs_on_the_fast_stage():
-    """Criterion: drift is caught before a pull request is opened, not at release."""
-    config = json.loads(CONFIG)
-    assert "dependency_sync" in config["stages"]["fast"]
-    assert any("check_dependencies.py" in c for c in config["commands"]["dependency_sync"])
-
-
 def _distributions(
     directory: Path,
     *,
@@ -299,129 +286,45 @@ def test_extras_are_not_counted_as_runtime_dependencies(tmp_path):
     assert check_artifacts(tmp_path / "dist", expected) == []
 
 
-def test_the_build_step_verifies_its_own_artifacts():
-    config = json.loads(CONFIG)
-    build = config["commands"]["build"]
-    assert any("--sdist" in command for command in build)
-    assert any("--artifacts" in command for command in build)
-    assert "build" in config["stages"]["pr"], "the verification must run on a pull request"
+# ------------------------------------------------- the forbidden call-site guard
 
 
-def test_the_wheel_metadata_is_built_from_the_requirements_file():
-    """The structural cross-check, with a real parser rather than by line.
-
-    Skips below 3.11 rather than weakening the gate: `requires-python` is >=3.10 and the
-    fast gate runs under whatever `scripts/bootstrap` resolved, so `check_dependencies`
-    itself stays parser-free. Hosted CI pins 3.12, so this does run where it counts.
-    """
-    tomllib = pytest.importorskip("tomllib", reason="tomllib arrived in Python 3.11")
-    parsed = tomllib.loads(PYPROJECT)
-    assert "dependencies" in parsed["project"]["dynamic"]
-    assert "dependencies" not in parsed["project"], "a static list is back"
-    assert parsed["tool"]["setuptools"]["dynamic"]["dependencies"]["file"] == ["requirements.txt"]
-    expected = [
-        line.strip()
-        for line in REQUIREMENTS.splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-    assert expected, "requirements.txt carries no requirements"
-    # A superset, not an exact list: #23 adds loader libraries, and a test that has to be
-    # edited for every new dependency is a test people delete. What must not happen is one
-    # of these quietly disappearing, since the wheel now takes its metadata from here.
-    names = {re.split(r"[<>=!~\[; @]", entry)[0] for entry in expected}
-    assert names >= {
-        "fastapi",
-        "uvicorn",
-        "httpx",
-        "pydantic",
-        "pydantic-settings",
-        "chromadb",
-        "pypdf",
-        "python-docx",
-        "python-multipart",
-    }
-
-
-# ------------------------------------------------------- the chromadb pin (Issue #25)
-
-
-def test_chromadb_is_held_below_the_affected_range():
-    """PYSEC-2026-311 is introduced at 1.0.0 with no fixed release.
-
-    OSV lists 44 affected versions and every one is 1.x, so a `<1.0` constraint is a clean
-    audit rather than a suppression. Pinned as a test because a later widening would
-    otherwise show up only as a red release gate, weeks after the change that caused it.
-    """
-    entries = [
-        line.split("#")[0].strip()
-        for line in REQUIREMENTS.splitlines()
-        if line.split("#")[0].strip().startswith("chromadb")
-    ]
-    assert entries == ["chromadb>=0.5,<1.0"], entries
-
-
-def test_posthog_is_held_where_chroma_can_call_it():
-    """Chroma 0.6.x calls `posthog.capture(distinct_id, event, properties)`.
-
-    posthog 6.0 changed that to `capture(event, **kwargs)`, and Chroma declares only
-    `posthog>=2.4.0`, so a fresh install resolves 7.x and every client start, collection
-    create and query logs an ERROR. Pinning chromadb below 1.0 is what makes its companion
-    this repository's problem.
-    """
-    entries = [
-        line.split("#")[0].strip()
-        for line in REQUIREMENTS.splitlines()
-        if line.split("#")[0].strip().startswith("posthog")
-    ]
-    assert entries == ["posthog>=2.4,<6"], entries
-
-
-def test_the_repository_uses_no_chroma_http_client():
+def test_a_repository_that_declares_no_forbidden_call_sites_reports_none():
+    """The default an adopter starts from, and the state this repository stays in."""
     assert check_forbidden_call_sites() == []
 
 
-def test_the_http_client_guard_actually_fires(tmp_path, monkeypatch):
+def test_a_declared_call_site_guard_actually_fires(tmp_path, monkeypatch):
     """A guard that cannot fire is worse than none: it reports safety it never checked.
 
     This one shipped with a literal backspace where its `\b` should have been, matched
     nothing, and passed.
     """
-    import check_dependencies
-
-    package = tmp_path / "pkg"
-    package.mkdir()
+    package = consumer(tmp_path, monkeypatch, forbidden_call_sites=[HTTP_CLIENT_RULE])
     (package / "store.py").write_text(
-        "import chromadb\nclient = chromadb.HttpClient(host='chroma.internal')\n",
+        "import vendor\nclient = vendor.HttpClient(host='service.internal')\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(check_dependencies, "package_dir", lambda: package)
-    monkeypatch.setattr(check_dependencies, "ROOT", tmp_path)
     failures = check_forbidden_call_sites()
     assert len(failures) == 1
-    assert "PYSEC-2026-311" in failures[0]
+    assert HTTP_CLIENT_RULE["message"] in failures[0]
 
 
-def test_the_guard_ignores_the_embedded_client(tmp_path, monkeypatch):
-    import check_dependencies
-
-    package = tmp_path / "pkg"
-    package.mkdir()
+def test_the_guard_ignores_a_call_the_rule_does_not_name(tmp_path, monkeypatch):
+    package = consumer(tmp_path, monkeypatch, forbidden_call_sites=[HTTP_CLIENT_RULE])
     (package / "store.py").write_text(
-        "import chromadb\nclient = chromadb.PersistentClient(path='data')\n", encoding="utf-8"
+        "import vendor\nclient = vendor.PersistentClient(path='data')\n", encoding="utf-8"
     )
-    monkeypatch.setattr(check_dependencies, "package_dir", lambda: package)
-    monkeypatch.setattr(check_dependencies, "ROOT", tmp_path)
     assert check_forbidden_call_sites() == []
 
 
-def test_chroma_telemetry_is_switched_off():
-    """Chroma posts usage telemetry to a third party by default.
-
-    From a process holding client documents that is an unannounced outbound connection,
-    and it contradicts the standalone story the embedded backend exists to provide.
-    """
-    source = (ROOT / "knowledge_nexus" / "retrieval" / "chroma_store.py").read_text(encoding="utf-8")
-    assert "anonymized_telemetry=False" in source
+def test_a_repository_that_declares_no_rules_is_not_scanned(tmp_path, monkeypatch):
+    """The default an adopter starts from: the mechanism is generic, the rules are theirs."""
+    package = consumer(tmp_path, monkeypatch, forbidden_call_sites=[])
+    (package / "store.py").write_text(
+        "import vendor\nclient = vendor.HttpClient(host='service.internal')\n", encoding="utf-8"
+    )
+    assert check_forbidden_call_sites() == []
 
 
 def test_a_reordered_specifier_is_the_same_requirement():
@@ -451,17 +354,12 @@ def test_equivalent_spellings_compare_equal(left, right):
     assert normalise(left) == normalise(right)
 
 
-def test_the_guard_also_catches_the_async_client(tmp_path, monkeypatch):
-    import check_dependencies
-
-    package = tmp_path / "pkg"
-    package.mkdir()
+def test_the_guard_also_catches_the_async_spelling(tmp_path, monkeypatch):
+    package = consumer(tmp_path, monkeypatch, forbidden_call_sites=[HTTP_CLIENT_RULE])
     (package / "store.py").write_text(
-        "import chromadb\nc = chromadb.AsyncHttpClient(host='chroma.internal')\n",
+        "import vendor\nc = vendor.AsyncHttpClient(host='service.internal')\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(check_dependencies, "package_dir", lambda: package)
-    monkeypatch.setattr(check_dependencies, "ROOT", tmp_path)
     assert len(check_forbidden_call_sites()) == 1
 
 
@@ -475,13 +373,8 @@ def test_the_guard_also_catches_the_async_client(tmp_path, monkeypatch):
 )
 def test_the_guard_does_not_fire_on_prose(tmp_path, monkeypatch, source):
     """Documenting the prohibition must not break the gate that enforces it."""
-    import check_dependencies
-
-    package = tmp_path / "pkg"
-    package.mkdir()
+    package = consumer(tmp_path, monkeypatch, forbidden_call_sites=[HTTP_CLIENT_RULE])
     (package / "store.py").write_text(source, encoding="utf-8")
-    monkeypatch.setattr(check_dependencies, "package_dir", lambda: package)
-    monkeypatch.setattr(check_dependencies, "ROOT", tmp_path)
     assert check_forbidden_call_sites() == []
 
 
@@ -502,134 +395,36 @@ def test_equivalent_names_and_markers_compare_equal(left, right):
     assert normalise(left) == normalise(right)
 
 
-def test_the_audit_no_longer_falls_back_past_strict():
-    """`pip-audit --strict || pip-audit` re-runs without --strict and masks the failure."""
-    commands = json.loads(CONFIG)["commands"]["security"]
-    assert commands == ["pip-audit -r requirements.txt --strict"], commands
-    assert not any("||" in command for command in commands)
+ASSET = "demo/web/index.html"
 
 
-# ------------------------------------------------ the audit on the PR gate (Issue #28)
-
-
-def test_a_dependency_audit_runs_on_every_pull_request():
-    """Before this, findings surfaced only at release -- weeks after the change."""
-    config = json.loads(CONFIG)
-    assert "security" in config["stages"]["audit"]
-
-
-def test_the_audit_stage_has_a_job_on_the_pull_request_workflow():
-    """A stage nothing invokes is a stage that never runs."""
-    workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
-    assert "./ci/run audit" in workflow
-    assert "pull_request" in workflow
-
-
-def test_the_audit_blocks_rather_than_reports():
-    """`continue-on-error` or a `|| true` would make this advisory, which it is not.
-
-    The job body is located by parsing rather than by slicing between two literals:
-    slicing assumed `audit` precedes `pr-tests`, and reordering them would have made the
-    slice empty and this assertion vacuous.
-    """
-    workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
-    blocks = dict(job_blocks(workflow))
-    assert "audit" in blocks, sorted(blocks)
-    assert "continue-on-error" not in blocks["audit"]
-    assert all("||" not in command for command in json.loads(CONFIG)["commands"]["security"])
-
-
-def test_the_audited_file_is_the_file_the_wheel_is_built_from():
-    """The equivalence that makes auditing one file sufficient.
-
-    After #16 the wheel's dependency metadata is generated from requirements.txt, so
-    scanning that file scans what ships. The moment pyproject stops delegating, or the
-    audit points somewhere else, the audit stops covering the shipped set -- and it would
-    still report success. Both halves are asserted, and the delegation target is compared
-    against the audited path rather than each being checked in isolation.
-    """
-    assert check_pyproject(PYPROJECT) == []
-    assert check_audit_target(CONFIG) == []
-    audited = [command for command in json.loads(CONFIG)["commands"]["security"] if "pip-audit" in command]
-    assert audited, "no audit command to compare against"
-    delegated = quoted(DELEGATION.search(sections(PYPROJECT)["tool.setuptools.dynamic"]).group("files"))
-    assert delegated == ["requirements.txt"], delegated
-    assert all(delegated[0] in command for command in audited)
-
-
-def test_every_pull_request_job_is_a_required_check():
-    """A job that runs but is not required is a check that reports, not one that blocks.
-
-    Branch protection is unavailable on this repository's plan, so this list is currently
-    declarative -- it is what `scripts/setup-github` would apply. That makes it easier, not
-    harder, to add a gating job and forget it here, and the omission would only surface as
-    a merge that should have been stopped.
-    """
-    workflow = (ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
-    required = json.loads(CONFIG)["github"]["branch_protection"]["integration"]["required_checks"]
-    gating = {}
-    for job, body in job_blocks(workflow):
-        named = re.search(r"(?m)^    name: (.+?)\s*$", body)
-        # An advisory job reports and never fails, so requiring it would be meaningless.
-        # Recognised by an explicit marker, not by its name or by what its comments
-        # happen to mention: matching on 'advisory' anywhere would silently drop a
-        # gating job called 'Security advisory scan' from this check.
-        advisory = ADVISORY_MARKER in body
-        if named and not advisory:
-            gating[job] = named.group(1)
-    assert gating, "no gating job names found; this test is pinned to the wrong shape"
-    missing = [name for name in gating.values() if name not in required]
-    assert missing == [], f"jobs that run but do not gate: {missing}"
-
-
-def test_the_fast_gate_stays_hermetic():
-    """The advisory check exists so this setting never has to be relaxed (Issue #24).
-
-    "Fixing" the typed findings by dropping `no_site_packages` would stop the fast gate
-    being reproducible, and one numpy release could collapse the whole typecheck.
-    """
-    assert "no_site_packages = true" in PYPROJECT
-    advisory = (ROOT / "ci" / "mypy-advisory.ini").read_text(encoding="utf-8")
-    # The setting, not the word: the advisory config explains the trade-off in a comment,
-    # and an assertion that cannot tell those apart is one that fails for the wrong reason.
-    settings = [line for line in advisory.splitlines() if not line.lstrip().startswith("#")]
-    assert not any("no_site_packages" in line for line in settings), (
-        "the advisory config must see third-party types"
-    )
-
-
-def test_no_gating_stage_uses_the_advisory_config():
-    """The advisory config must never become the one a blocking stage runs."""
-    config = json.loads(CONFIG)
-    using = {
-        stage
-        for stage, groups in config["stages"].items()
-        for group in groups
-        if any(
-            "mypy-advisory" in command or "typed_advisory" in command
-            for command in config["commands"].get(group) or []
-        )
-    }
-    assert using == {"typed-advisory"}, using
-
-
-def test_distributions_that_ship_the_ui_pass(tmp_path):
+def test_distributions_that_ship_the_declared_asset_pass(tmp_path, monkeypatch):
+    consumer(tmp_path, monkeypatch, packaged_assets=[ASSET])
     _distributions(tmp_path / "dist")
     assert check_packaged_assets(tmp_path / "dist") == []
 
 
-def test_a_wheel_without_the_ui_is_rejected(tmp_path):
-    """The shipped failure: every API route answers and GET / returns a 500 (Issue #55)."""
+def test_a_wheel_without_the_declared_asset_is_rejected(tmp_path, monkeypatch):
+    """The shipped failure this guards: every API route answers and GET / returns a 500."""
+    consumer(tmp_path, monkeypatch, packaged_assets=[ASSET])
     _distributions(tmp_path / "dist", assets=False)
     failures = check_packaged_assets(tmp_path / "dist")
-    assert any(f"{packaged_assets()[0]}" in failure and "500" in failure for failure in failures)
+    assert any(ASSET in failure and "500" in failure for failure in failures)
 
 
-def test_a_source_distribution_without_the_ui_is_rejected(tmp_path):
+def test_a_source_distribution_without_the_declared_asset_is_rejected(tmp_path, monkeypatch):
     """A wheel is only ever as complete as the sdist a rebuild would start from."""
+    consumer(tmp_path, monkeypatch, packaged_assets=[ASSET])
     _distributions(tmp_path / "dist", assets=False)
     failures = check_packaged_assets(tmp_path / "dist")
     assert any("would ship without it" in failure for failure in failures)
+
+
+def test_a_repository_declaring_no_assets_has_nothing_to_check(tmp_path, monkeypatch):
+    """Empty is the adopter's default, and must not read as every asset being missing."""
+    consumer(tmp_path, monkeypatch, packaged_assets=[])
+    _distributions(tmp_path / "dist", assets=False)
+    assert check_packaged_assets(tmp_path / "dist") == []
 
 
 def test_the_asset_check_reports_a_directory_with_nothing_to_read(tmp_path):
@@ -640,29 +435,8 @@ def test_the_asset_check_reports_a_directory_with_nothing_to_read(tmp_path):
 
 def test_the_artifacts_flag_runs_the_asset_check(tmp_path, monkeypatch, capsys):
     """Wiring, not logic: a check nothing invokes verifies nothing, and looks identical."""
+    consumer(tmp_path, monkeypatch, packaged_assets=[ASSET])
     _distributions(tmp_path / "dist", assets=False)
     monkeypatch.setattr(sys, "argv", ["check_dependencies.py", "--artifacts", str(tmp_path / "dist")])
     assert main() == 1
-    assert f"does not contain {packaged_assets()[0]}" in capsys.readouterr().out
-
-
-def test_every_packaged_asset_is_in_the_repository():
-    """The list is only worth checking against artifacts while it names real files."""
-    for asset in packaged_assets():
-        assert (ROOT / asset).is_file(), f"{asset} is declared as package data but not present"
-
-
-def test_the_ui_is_declared_as_package_data():
-    """setuptools packages modules; data files reach a distribution only when declared.
-
-    Caught here as well as in the artifact check, because the artifact check needs a build
-    and this is the line whose removal empties it.
-    """
-    table = sections(PYPROJECT).get("tool.setuptools.package-data", "")
-    declarations = " ".join(line.split("#")[0] for line in table.splitlines())
-    patterns = quoted(declarations)
-    package, _, relative = packaged_assets()[0].partition("/")
-    assert package in table, f"{package} declares no package data"
-    assert any(fnmatch(relative, pattern) for pattern in patterns), (
-        f"no declared pattern in {patterns} covers {relative}"
-    )
+    assert f"does not contain {ASSET}" in capsys.readouterr().out

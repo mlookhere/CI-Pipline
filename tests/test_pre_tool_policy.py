@@ -347,12 +347,17 @@ def test_a_bash_command_naming_a_workflow_file_is_still_recognised(root, monkeyp
     assert "risk:ci" in reason
 
 
-def test_the_real_configuration_maps_the_incident_path_to_security(root, monkeypatch):
-    """The Issue's own example: knowledge_nexus/config.py, edited directly, must need risk:security."""
+def test_the_real_configuration_maps_a_permission_path_to_security(root, monkeypatch):
+    """Against the shipped configuration, not a fixture: a real file, both labels it needs.
+
+    `.claude/hooks/permission_request.py` is matched by `.claude/**` under risk:ci and by
+    `**/*permission*` under risk:security, so an Issue carrying only the first is still
+    missing one -- which is the case a single-label check would wave through.
+    """
     cfg = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
     monkeypatch.setattr(pre_tool_policy, "gh_issue_live", _labelled("risk:ci"))
     reason = pre_tool_policy.missing_risk_labels(
-        root, cfg, "Edit", {"file_path": str(root / "knowledge_nexus" / "config.py")}, 52
+        root, cfg, "Edit", {"file_path": str(root / ".claude" / "hooks" / "permission_request.py")}, 52
     )
     assert reason is not None
     assert "risk:security" in reason
@@ -796,9 +801,11 @@ def build_checkout(tmp_path: Path, branch_name: str = "work/52-entry-point") -> 
     (root / "scripts" / "lib").mkdir(parents=True)
     shutil.copy(ROOT / "scripts" / "lib" / "python.sh", root / "scripts" / "lib" / "python.sh")
     shutil.copy(ROOT / ".claude-workflow.json", root / ".claude-workflow.json")
-    (root / "knowledge_nexus").mkdir()
-    (root / "knowledge_nexus" / "config.py").write_text("SETTING = 1\n", encoding="utf-8")
-    (root / "knowledge_nexus" / "pipeline.py").write_text("SETTING = 1\n", encoding="utf-8")
+    # A risk path and an ordinary one, both taken from the shipped configuration rather
+    # than invented: `.claude/hooks/permission_request.py` is matched by `**/*permission*`
+    # under risk:security and by `.claude/**` under risk:ci, and `pipeline.py` at the root
+    # is matched by nothing. The copytree above already placed the first.
+    (root / "pipeline.py").write_text("SETTING = 1\n", encoding="utf-8")
     make_repo(root, branch_name)
     return root
 
@@ -839,13 +846,13 @@ def run_entry_point(root: Path, event: dict) -> dict:
     return json.loads(done.stdout) if done.stdout.strip() else {}
 
 
-def edit_event(root: Path, name: str = "config.py") -> dict:
+def edit_event(root: Path, name: str = ".claude/hooks/permission_request.py") -> dict:
     return {
         "session_id": "entry-point",
         "cwd": str(root),
         "tool_name": "Edit",
         "tool_input": {
-            "file_path": str(root / "knowledge_nexus" / name),
+            "file_path": str(root / name),
             "old_string": "SETTING = 1",
             "new_string": "SETTING = 2",
         },

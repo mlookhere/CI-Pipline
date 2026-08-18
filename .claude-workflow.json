@@ -37,7 +37,6 @@
         "**/security/**",
         "**/*permission*",
         "**/*authorization*",
-        "knowledge_nexus/config.py",
         ".env.example"
       ],
       "risk:deployment": [
@@ -76,26 +75,14 @@
       }
     },
     "expected_owner": "mlookhere",
-    "expected_repository": "Knowledge-Nexus"
+    "expected_repository": "CI-Pipline"
   },
   "project": {
-    "package_dir": "knowledge_nexus",
-    "packaged_assets": [
-      "knowledge_nexus/web/index.html"
-    ],
-    "typed_advisory_witness": "chromadb",
-    "executables": [
-      "ops/deploy-development",
-      "ops/deploy-production",
-      "ops/healthcheck",
-      "ops/rollback-production"
-    ],
-    "forbidden_call_sites": [
-      {
-        "pattern": "\\b(?:Async)?HttpClient\\s*\\(",
-        "message": "uses a Chroma HTTP client, which exposes the surface PYSEC-2026-311 targets; the pin to chromadb<1.0 assumes embedded use, so reassess that advisory before adopting a server"
-      }
-    ]
+    "package_dir": "",
+    "packaged_assets": [],
+    "typed_advisory_witness": "",
+    "executables": [],
+    "forbidden_call_sites": []
   },
   "token_control": {
     "capture_noisy_commands": true,
@@ -104,16 +91,16 @@
   },
   "commands": {
     "bootstrap_local": [
-      "\"$CI_PYTHON\" -m venv .venv",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check --upgrade pip",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -r requirements.txt",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -e \".[dev]\""
+      "\"$CI_PYTHON\" -m pytest --version",
+      "\"$CI_PYTHON\" -m mypy --version",
+      "\"$CI_PYTHON\" -m ruff --version",
+      "\"$CI_PYTHON\" -m pip_audit --version"
     ],
     "bootstrap_ci": [
-      "\"$CI_PYTHON\" -m venv .venv",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check --upgrade pip",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -r requirements.txt",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -e \".[dev]\""
+      "\"$CI_PYTHON\" -m pytest --version",
+      "\"$CI_PYTHON\" -m mypy --version",
+      "\"$CI_PYTHON\" -m ruff --version",
+      "\"$CI_PYTHON\" -m pip_audit --version"
     ],
     "format_check": [
       "ruff format --check ."
@@ -127,70 +114,23 @@
     "unit": [
       "\"$PROJECT_PYTHON\" -m pytest -q"
     ],
-    "integration": [],
-    "build": [
-      "\"$CI_PYTHON\" -m build --sdist --wheel --outdir artifacts/dist",
-      "\"$CI_PYTHON\" workflow/check_dependencies.py --artifacts artifacts/dist"
+    "coverage": [
+      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=workflow --cov=ci --cov-report=term --cov-fail-under=42"
     ],
     "security": [
-      "pip-audit -r requirements.txt --strict"
-    ],
-    "migration": [],
-    "e2e": [],
-    "image_build": [
-      "docker build --pull -t \"local/${GITHUB_REPOSITORY:-project}:${GITHUB_SHA:-dev}\" ."
-    ],
-    "deploy_development": [
-      "./ops/deploy-development \"${GITHUB_SHA:-local}\""
-    ],
-    "healthcheck_development": [
-      "./ops/healthcheck development"
-    ],
-    "deploy_production": [
-      "./ops/deploy-production \"${GITHUB_SHA:-local}\""
-    ],
-    "healthcheck_production": [
-      "./ops/healthcheck production"
-    ],
-    "rollback_production": [
-      "./ops/rollback-production \"${ROLLBACK_REF:?ROLLBACK_REF is required}\""
-    ],
-    "mutation": [],
-    "property": [],
-    "flake": [],
-    "contract": [],
-    "generated_check": [],
-    "coverage": [
-      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=knowledge_nexus --cov-report=term --cov-fail-under=70"
-    ],
-    "clean_install": [
-      "\"$CI_PYTHON\" workflow/clean_install.py --dist artifacts/dist --package knowledge_nexus"
-    ],
-    "sbom": [
-      "mkdir -p artifacts/release",
-      "\"$CI_PYTHON\" -m cyclonedx_py requirements requirements.txt --output-format JSON --output-file artifacts/release/sbom.cdx.json"
-    ],
-    "accessibility": [],
-    "performance_smoke": [],
-    "dead_code": [],
-    "package_release": [
-      "mkdir -p artifacts/release",
-      "cp artifacts/dist/*.whl artifacts/dist/*.tar.gz artifacts/release/"
+      "pip-audit -r ci/requirements-ci.txt --strict"
     ],
     "workflow_self_test": [
       "\"$CI_PYTHON\" workflow/self_test.py --ci"
     ],
-    "dependency_sync": [
-      "\"$CI_PYTHON\" workflow/check_dependencies.py"
-    ],
-    "typed_advisory": [
-      "\"$CI_PYTHON\" workflow/typed_advisory.py \"$PROJECT_PYTHON\""
+    "build": [
+      "\"$CI_PYTHON\" -m build --sdist --wheel --outdir artifacts/dist",
+      "\"$CI_PYTHON\" workflow/check_dependencies.py --artifacts artifacts/dist"
     ]
   },
   "stages": {
     "fast": [
       "workflow_self_test",
-      "dependency_sync",
       "quality",
       "format_check",
       "lint",
@@ -198,54 +138,26 @@
     ],
     "pr": [
       "unit",
-      "coverage",
-      "build"
+      "coverage"
     ],
     "release": [
       "security",
       "unit",
-      "coverage",
-      "build",
-      "clean_install",
-      "package_release",
-      "sbom"
+      "coverage"
     ],
-    "deploy-development": [
-      "deploy_development",
-      "healthcheck_development"
+    "nightly": [
+      "security",
+      "unit",
+      "coverage"
     ],
-    "deploy-production": [
-      "deploy_production",
-      "healthcheck_production"
-    ],
-    "rollback-production": [
-      "rollback_production",
-      "healthcheck_production"
+    "audit": [
+      "security"
     ],
     "bootstrap-local": [
       "bootstrap_local"
     ],
     "bootstrap-ci": [
       "bootstrap_ci"
-    ],
-    "nightly": [
-      "security",
-      "unit",
-      "coverage",
-      "build",
-      "clean_install",
-      "sbom"
-    ],
-    "release-artifact": [
-      "build",
-      "package_release",
-      "sbom"
-    ],
-    "audit": [
-      "security"
-    ],
-    "typed-advisory": [
-      "typed_advisory"
     ]
   },
   "quality": {
