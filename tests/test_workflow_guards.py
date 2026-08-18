@@ -849,3 +849,27 @@ def test_the_shipped_configuration_warns_about_nothing():
 
     assert self_test.collect_warnings(config) == []
     assert "build" not in config["commands"], "the group only ever existed to silence the warning"
+
+
+def test_setup_github_claims_protection_only_when_it_installed_it():
+    """The summary asserted protected branches whatever happened, four lines after warning.
+
+    Observed while bootstrapping this repository: `SKIP_BRANCH_PROTECTION=1` printed "branch
+    protection skipped by request" and then "protected integration/production branches with
+    required CI checks". Branch protection is the only control this script installs that GitHub
+    enforces server-side, so a false report of it is the one that matters (Issue #8).
+    """
+    script = (self_test.ROOT / "scripts" / "setup-github").read_text(encoding="utf-8")
+    claim = "protected integration/production branches"
+    # Collapsed, because the sentence used to wrap mid-phrase across two lines of the heredoc.
+    assert claim in " ".join(script.split()), "the success sentence is gone; repin this test"
+
+    unconditional = script.split("cat <<'NEXT'", 1)[1]
+    assert claim not in " ".join(unconditional.split()), (
+        "the summary states protected branches unconditionally, whatever actually happened"
+    )
+    assert 'PROTECTION_STATUS="skipped"' in script, "a deliberate skip must be recorded"
+    assert 'PROTECTION_STATUS="failed"' in script, "a refusal must be recorded"
+    assert 'if [[ "$PROTECTION_STATUS" == "failed" ]]; then\n  exit 1' in script, (
+        "a refused protection must fail the script, not merely warn"
+    )
