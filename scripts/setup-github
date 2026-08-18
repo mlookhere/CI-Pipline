@@ -84,10 +84,15 @@ gh variable set ENFORCE_PINNED_ACTIONS --body true >/dev/null || \
 INTEGRATION="$("$PY" -c 'import json; print(json.load(open(".claude-workflow.json"))["branches"]["integration"])')"
 PRODUCTION="$("$PY" -c 'import json; print(json.load(open(".claude-workflow.json"))["branches"]["production"])')"
 
+# What the closing summary may claim. Set on every path below, because that summary
+# asserted protected branches unconditionally: it printed four lines after the
+# skipped-by-request warning, and after an API refusal too (Issue #8).
+PROTECTION_STATUS="installed"
+
 protect_branch() {
   local branch="$1" checks_json="$2" reviews="$3"
-  gh api -X PUT "repos/{owner}/{repo}/branches/$branch/protection" \
-    --input - <<PROTECTION || echo "WARNING: could not protect $branch (needs admin); configure manually."
+  if ! gh api -X PUT "repos/{owner}/{repo}/branches/$branch/protection" \
+    --input - <<PROTECTION
 {
   "required_status_checks": {"strict": true, "contexts": $checks_json},
   "enforce_admins": true,
@@ -98,10 +103,15 @@ protect_branch() {
   "required_conversation_resolution": true
 }
 PROTECTION
+  then
+    echo "WARNING: could not protect $branch (needs admin); configure manually."
+    PROTECTION_STATUS="failed"
+  fi
 }
 
 if [[ "${SKIP_BRANCH_PROTECTION:-0}" == "1" ]]; then
   echo "WARNING: branch protection skipped by request."
+  PROTECTION_STATUS="skipped"
 else
   INT_CHECKS="$("$PY" -c 'import json; c=json.load(open(".claude-workflow.json")); print(json.dumps(c["github"]["branch_protection"]["integration"]["required_checks"]))')"
   PROD_CHECKS="$("$PY" -c 'import json; c=json.load(open(".claude-workflow.json")); print(json.dumps(c["github"]["branch_protection"]["production"]["required_checks"]))')"
@@ -111,11 +121,18 @@ else
   protect_branch "$PRODUCTION" "$PROD_CHECKS" "$PROD_REVIEWS"
 fi
 
-cat <<'NEXT'
+case "$PROTECTION_STATUS" in
+  installed) SUMMARY="protected integration/production branches with required CI checks." ;;
+  skipped)   SUMMARY="NO branch protection: skipped by request. Rerun without SKIP_BRANCH_PROTECTION." ;;
+  *)         SUMMARY="NO branch protection: the API refused it. See the warning above." ;;
+esac
 
-GitHub repository metadata is installed:
-labels, the pinned control Issue, pinned-Action enforcement, and protected
-integration/production branches with required CI checks.
+echo
+echo "GitHub repository metadata is installed:"
+echo "labels, the pinned control Issue, pinned-Action enforcement, and"
+echo "$SUMMARY"
+
+cat <<'NEXT'
 
 Complete these repository-specific steps once:
 
@@ -128,3 +145,10 @@ Complete these repository-specific steps once:
 4. Settings > Environments: create `production` with required reviewers
    before enabling any deployment workflow.
 NEXT
+
+# A refusal is a failure. Branch protection is the only control this script installs that
+# GitHub enforces server-side, so reporting success without it is the one lie that matters.
+# A deliberate skip is not a failure.
+if [[ "$PROTECTION_STATUS" == "failed" ]]; then
+  exit 1
+fi

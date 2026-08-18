@@ -790,3 +790,86 @@ def test_the_sync_group_is_scoped_to_one_trigger():
         f"sync runs in group {group.group(1)!r}, shared across triggers; an issues event can "
         "cancel the run a pull request reports"
     )
+
+
+def _first_statement_of_main(source: str) -> str | None:
+    """The first statement in `main()`, rendered, or None when there is no `main()`."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == "main" and node.body:
+            return ast.dump(node.body[0])
+    return None
+
+
+def test_every_module_that_imports_the_stream_fix_calls_it_first():
+    """Importing it and calling it late is the same bug with an alibi.
+
+    `use_utf8_streams()` has to run before anything can write, including argparse's usage
+    message and the interpreter's own traceback -- both go to a stderr that is still on the
+    locale codec if the call sits after `parse_args()`. On Windows that codec is cp1252, so
+    the process dies while reporting rather than while working, and the traceback names an
+    encoding instead of whatever it was describing (Issues #77 and #7).
+    """
+    offenders = []
+    for relative in sorted(self_test.tracked_files()):
+        # Entry points only. A test module naming the function is discussing it, not calling it.
+        if not relative.endswith(".py") or not relative.startswith(("workflow/", "ci/", ".claude/")):
+            continue
+        source = (self_test.ROOT / relative).read_text(encoding="utf-8", errors="replace")
+        if "use_utf8_streams" not in source or "def main" not in source:
+            continue
+        first = _first_statement_of_main(source)
+        if first is None or "use_utf8_streams" not in first:
+            offenders.append(relative)
+
+    assert offenders == [], f"these call use_utf8_streams() late or not at all: {offenders}"
+
+
+def test_a_repository_with_no_package_is_not_warned_about_build():
+    """A warning on every green run is how a repository teaches people to skip its output.
+
+    It also kept a `build` group alive in this repository's own configuration for no reason
+    but to silence itself -- config written around a check rather than because anything wanted
+    it, which is the shape the plane exists to catch (Issue #11).
+    """
+    assert self_test.collect_warnings({"project": {}, "commands": {"unit": ["pytest"]}}) == []
+
+
+def test_a_repository_with_a_package_still_is():
+    assert any(
+        "'build'" in warning
+        for warning in self_test.collect_warnings(
+            {"project": {"package_dir": "demo"}, "commands": {"unit": ["pytest"]}}
+        )
+    )
+
+
+def test_the_shipped_configuration_warns_about_nothing():
+    """Whatever the rule is, this repository must satisfy it without a placeholder group."""
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+
+    assert self_test.collect_warnings(config) == []
+    assert "build" not in config["commands"], "the group only ever existed to silence the warning"
+
+
+def test_setup_github_claims_protection_only_when_it_installed_it():
+    """The summary asserted protected branches whatever happened, four lines after warning.
+
+    Observed while bootstrapping this repository: `SKIP_BRANCH_PROTECTION=1` printed "branch
+    protection skipped by request" and then "protected integration/production branches with
+    required CI checks". Branch protection is the only control this script installs that GitHub
+    enforces server-side, so a false report of it is the one that matters (Issue #8).
+    """
+    script = (self_test.ROOT / "scripts" / "setup-github").read_text(encoding="utf-8")
+    claim = "protected integration/production branches"
+    # Collapsed, because the sentence used to wrap mid-phrase across two lines of the heredoc.
+    assert claim in " ".join(script.split()), "the success sentence is gone; repin this test"
+
+    unconditional = script.split("cat <<'NEXT'", 1)[1]
+    assert claim not in " ".join(unconditional.split()), (
+        "the summary states protected branches unconditionally, whatever actually happened"
+    )
+    assert 'PROTECTION_STATUS="skipped"' in script, "a deliberate skip must be recorded"
+    assert 'PROTECTION_STATUS="failed"' in script, "a refusal must be recorded"
+    assert 'if [[ "$PROTECTION_STATUS" == "failed" ]]; then\n  exit 1' in script, (
+        "a refused protection must fail the script, not merely warn"
+    )

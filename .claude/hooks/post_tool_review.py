@@ -34,6 +34,12 @@ def failure_count(root: Path, command: str, failed: bool) -> int:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         data = {}
+    # `[]` and `"x"` parse cleanly and then raise AttributeError on `.get`, which nothing here
+    # catches. Truncated or concurrently written state is exactly what a crash and restart
+    # leaves behind, so the failing input is the one this file is most likely to meet.
+    # `stop_gate.fresh_issue` already guards the identical shape (Issue #4).
+    if not isinstance(data, dict):
+        data = {}
     if failed:
         data[key] = int(data.get(key, 0)) + 1
     else:

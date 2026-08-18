@@ -33,7 +33,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
-REQUIREMENTS = ROOT / "requirements.txt"
 CONFIG = ROOT / ".claude-workflow.json"
 
 
@@ -50,6 +49,21 @@ def project() -> dict:
         return json.loads(CONFIG.read_text(encoding="utf-8")).get("project", {})
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def manifest() -> str:
+    """The file the dependencies are declared in, audited from, and built into the wheel from.
+
+    `requirements.txt` was written into this module in six places. A consumer whose manifest
+    sits anywhere else -- this repository's is `ci/requirements-ci.txt` -- then failed
+    `check_audit_target` for a configuration that was correct, because the check compared
+    against a literal rather than against what the repository declares (Issue #9).
+    """
+    return str(project().get("dependency_manifest") or "requirements.txt")
+
+
+def requirements_path() -> Path:
+    return ROOT / manifest()
 
 
 def package_dir() -> Path | None:
@@ -135,10 +149,10 @@ def check_pyproject(text: str) -> list[str]:
             "pyproject.toml: [tool.setuptools.dynamic] must map dependencies to a file, or the "
             "dynamic declaration has nothing to read"
         )
-    elif quoted(delegation.group("files")) != ["requirements.txt"]:
+    elif quoted(delegation.group("files")) != [manifest()]:
         failures.append(
             "pyproject.toml: [tool.setuptools.dynamic] reads "
-            f"{quoted(delegation.group('files'))}, but requirements.txt is the file pip-audit "
+            f"{quoted(delegation.group('files'))}, but {manifest()} is the file pip-audit "
             "scans; reading anything else puts the shipped set back out of reach of the audit"
         )
     return failures
@@ -195,9 +209,9 @@ def check_audit_target(config_text: str) -> list[str]:
             ".claude-workflow.json: the security stage runs no pip-audit, so runtime dependencies "
             "are never scanned"
         ]
-    stray = [command for command in audits if "requirements.txt" not in command]
+    stray = [command for command in audits if manifest() not in command]
     return [
-        f".claude-workflow.json: security command {command!r} does not audit requirements.txt, "
+        f".claude-workflow.json: security command {command!r} does not audit {manifest()}, "
         "which is the file the package's dependencies are built from"
         for command in stray
     ]
@@ -241,9 +255,9 @@ def check_artifacts(directory: Path, expected: list[str]) -> list[str]:
 
     with tarfile.open(sdists[-1]) as archive:
         names = archive.getnames()
-        if not any(name.endswith("/requirements.txt") for name in names):
+        if not any(name.endswith(f"/{manifest()}") for name in names):
             failures.append(
-                f"{sdists[-1].name}: requirements.txt is not in the source distribution, so the "
+                f"{sdists[-1].name}: {manifest()} is not in the source distribution, so the "
                 "dynamic dependency source is missing and the sdist cannot be built"
             )
         info = next((name for name in names if name.endswith("PKG-INFO")), None)
@@ -417,7 +431,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    requirements = REQUIREMENTS.read_text(encoding="utf-8")
+    requirements = requirements_path().read_text(encoding="utf-8")
     failures = check_pyproject(PYPROJECT.read_text(encoding="utf-8"))
     failures += check_requirements(requirements)
     failures += check_audit_target(CONFIG.read_text(encoding="utf-8"))

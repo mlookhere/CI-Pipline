@@ -115,17 +115,13 @@
       "\"$PROJECT_PYTHON\" -m pytest -q"
     ],
     "coverage": [
-      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=workflow --cov=ci --cov-report=term --cov-fail-under=42"
+      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=workflow --cov=ci --cov-report=term --cov-fail-under=50"
     ],
     "security": [
       "pip-audit -r ci/requirements-ci.txt --strict"
     ],
     "workflow_self_test": [
       "\"$CI_PYTHON\" workflow/self_test.py --ci"
-    ],
-    "build": [
-      "\"$CI_PYTHON\" -m build --sdist --wheel --outdir artifacts/dist",
-      "\"$CI_PYTHON\" workflow/check_dependencies.py --artifacts artifacts/dist"
     ]
   },
   "stages": {
