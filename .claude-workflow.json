@@ -122,10 +122,6 @@
     ],
     "workflow_self_test": [
       "\"$CI_PYTHON\" workflow/self_test.py --ci"
-    ],
-    "build": [
-      "\"$CI_PYTHON\" -m build --sdist --wheel --outdir artifacts/dist",
-      "\"$CI_PYTHON\" workflow/check_dependencies.py --artifacts artifacts/dist"
     ]
   },
   "stages": {
