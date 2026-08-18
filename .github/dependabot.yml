@@ -18,6 +18,11 @@ updates:
 # The only Python manifest here is the CI tooling, and it lives in ci/ rather than
 # at the root. Pointed at "/" this ecosystem would find nothing and report nothing,
 # which reads exactly like a repository with no outdated dependencies.
+#
+# `risk:ci` as well as `risk:dependencies`, because `ci/requirements-ci.txt` is matched by
+# both `ci/**` and its own entry in `risk_paths`. An ecosystem that declares fewer labels
+# than its own files require opens pull requests that fail `PR metadata` every week and can
+# never be made to pass, since Dependabot relabels nothing after the fact.
   - package-ecosystem: "pip"
     directory: "/ci"
     target-branch: "dev"
@@ -27,3 +32,4 @@ updates:
     labels:
       - "type:maintenance"
       - "risk:dependencies"
+      - "risk:ci"

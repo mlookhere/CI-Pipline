@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "workflow"))
 # E402: `workflow/` is not an importable package, so sys.path has to be extended first.
 # Suppressed for that reason alone, matching tests/test_workflow_policy.py.
 import self_test  # noqa: E402
+import validate_pr  # noqa: E402
 from check_workflow_policy import job_blocks  # noqa: E402
 
 # A job carrying this marker reports rather than gates, so it is not a required check.
@@ -674,3 +675,53 @@ def test_no_gating_stage_uses_the_advisory_config():
         )
     }
     assert using == set(), using
+
+
+# The files each Dependabot ecosystem will actually edit. Written out rather than inferred,
+# because what a `directory:` resolves to is ecosystem-specific and guessing it would make
+# this test agree with a wrong answer.
+ECOSYSTEM_PATHS = {
+    "pip": ("ci/requirements-ci.txt",),
+    "github-actions": (".github/workflows/ci-pr.yml",),
+}
+
+
+def _declared_ecosystems() -> dict[str, set[str]]:
+    """`package-ecosystem` to the labels it declares, read from the shipped dependabot config."""
+    text = (self_test.ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    starts = [match.start() for match in re.finditer(r"(?m)^\s*-\s*package-ecosystem\s*:", text)]
+    found = {}
+    for index, start in enumerate(starts):
+        block = text[start : starts[index + 1] if index + 1 < len(starts) else len(text)]
+        name = re.search(r"package-ecosystem\s*:\s*[\"']?([^\"'\s#]+)", block)
+        labels = set(re.findall(r"(?m)^\s*-\s*[\"']([a-z]+:[a-z-]+)[\"']\s*$", block))
+        if name:
+            found[name.group(1)] = labels
+    return found
+
+
+@pytest.mark.parametrize("ecosystem", sorted(ECOSYSTEM_PATHS))
+def test_each_dependabot_ecosystem_declares_the_labels_its_own_files_require(ecosystem):
+    """A bot cannot relabel its pull request after the fact, so the config is the only chance.
+
+    `ci/requirements-ci.txt` is matched by `ci/**` as well as by its own `risk:dependencies`
+    entry, and the pip ecosystem declared only the latter. Every weekly update therefore
+    opened a pull request that failed `PR metadata` for a missing `risk:ci` and could never be
+    made to pass -- Dependabot does not add labels later, and a human editing them is a human
+    doing the bot's job every week.
+    """
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    risk_paths = config["github"]["risk_paths"]
+    required = {
+        label
+        for label, patterns in risk_paths.items()
+        for path in ECOSYSTEM_PATHS[ecosystem]
+        if validate_pr.path_requires_label(path, list(patterns))
+    }
+    declared = _declared_ecosystems()
+
+    assert ecosystem in declared, sorted(declared)
+    assert required <= declared[ecosystem], (
+        f"{ecosystem} touches {ECOSYSTEM_PATHS[ecosystem]}, which requires "
+        f"{sorted(required)}; it declares {sorted(declared[ecosystem])}"
+    )
