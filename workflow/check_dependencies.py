@@ -35,10 +35,33 @@ ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 REQUIREMENTS = ROOT / "requirements.txt"
 CONFIG = ROOT / ".claude-workflow.json"
-PACKAGE = ROOT / "knowledge_nexus"
+
+
+def project() -> dict:
+    """The consumer's half of the configuration.
+
+    This module is part of a control plane that is meant to be adopted by other repositories
+    (Issue #93). Every value it used to name directly -- the package directory, the packaged
+    assets, the call sites this project forbids -- belongs to whoever adopts it, so they are
+    read from `.claude-workflow.json` rather than written here. Nothing in this file names a
+    product now, and `self_test.check_no_product_names` fails the gate if that changes.
+    """
+    try:
+        return json.loads(CONFIG.read_text(encoding="utf-8")).get("project", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def package_dir() -> Path | None:
+    name = project().get("package_dir")
+    return ROOT / name if name else None
+
+
 # Package data the application reads at run time, named as it appears inside a wheel.
 # Anything listed here must be in the built distributions, not merely in the checkout.
-PACKAGED_ASSETS = ("knowledge_nexus/web/index.html",)
+def packaged_assets() -> tuple[str, ...]:
+    return tuple(project().get("packaged_assets", ()))
+
 
 # A table heading, tolerating indentation and a trailing comment. Anchoring on `$` alone
 # would leave `[project]  # comment` unrecognised and silently fold its body into whichever
@@ -52,12 +75,11 @@ DYNAMIC_DEPENDENCIES = re.compile(r"(?m)^[ \t]*dynamic[ \t]*=[ \t]*\[(?P<items>[
 # sub-table form is read separately, from its own section.
 DELEGATION = re.compile(r"(?m)^[ \t]*dependencies[ \t]*=[ \t]*\{[^}]*file[^[]*\[(?P<files>[^\]]*)\]")
 DELEGATION_TABLE = re.compile(r"(?m)^[ \t]*file[ \t]*=[ \t]*\[(?P<files>[^\]]*)\]")
-# A direct `HttpClient(` / `AsyncHttpClient(` call. This is a backstop, not a proof: an
-# alias, a `getattr`, or a name bound and then called all evade it. The property that
-# actually holds is enforced at run time, by `_require_local_api` refusing any client that
-# did not resolve to the embedded implementation.
+# The forbidden call-site patterns are a backstop, not a proof: an alias, a `getattr`, or a
+# name bound and then called all evade them. For the rule Knowledge Nexus declares, the
+# property that actually holds is enforced at run time by `_require_local_api`, which refuses
+# any Chroma client that did not resolve to the embedded implementation.
 QUOTES = ('"""', "'''", '"', "'")
-CHROMA_SERVER_CLIENT = re.compile(r"\b(?:Async)?HttpClient\s*\(")
 # A requirement as setuptools will read it: a name, optional extras, then either a version
 # specifier or a PEP 508 direct reference, then an optional marker. Inline comments are
 # stripped before matching -- setuptools strips them too, verified against a real build.
@@ -261,7 +283,7 @@ def check_packaged_assets(directory: Path) -> list[str]:
     if not sdists or not wheels:
         return [
             f"{directory}: expected a source distribution and a wheel to inspect for "
-            f"{', '.join(PACKAGED_ASSETS)}; found {len(sdists)} sdist(s) and {len(wheels)} wheel(s)"
+            f"{', '.join(packaged_assets())}; found {len(sdists)} sdist(s) and {len(wheels)} wheel(s)"
         ]
 
     failures: list[str] = []
@@ -270,7 +292,7 @@ def check_packaged_assets(directory: Path) -> list[str]:
         failures += [
             f"{wheels[-1].name}: does not contain {asset}, so an install of this wheel serves no "
             "web UI and answers the first request for it with a 500"
-            for asset in PACKAGED_ASSETS
+            for asset in packaged_assets()
             if asset not in packaged
         ]
 
@@ -281,7 +303,7 @@ def check_packaged_assets(directory: Path) -> list[str]:
         failures += [
             f"{sdists[-1].name}: does not contain {asset}, so a wheel built from this source "
             "distribution would ship without it"
-            for asset in PACKAGED_ASSETS
+            for asset in packaged_assets()
             if not any(name.endswith(f"/{asset}") for name in members)
         ]
     return failures
@@ -351,28 +373,35 @@ def code_only(line: str) -> str:
     return "".join(kept)
 
 
-def check_no_chroma_server_client() -> list[str]:
-    """The advisory this repository is pinned around is a *server* vulnerability.
+def check_forbidden_call_sites() -> list[str]:
+    """Call sites the consumer has decided its own code must not contain.
 
-    PYSEC-2026-311 is a pre-authentication code injection reachable through Chroma's HTTP
-    surface. `chromadb>=0.5,<1.0` keeps this install off every affected version, but that
-    pin is only half the argument: the other half is that the embedded client never opens
-    that surface at all. `HttpClient` or `AsyncHttpClient` would, and would do it quietly,
-    because nothing else in the build would change.
+    Knowledge Nexus uses this for one rule, and the rule is a good illustration of why it has
+    to be data rather than code. `chromadb>=0.5,<1.0` keeps the install off every version
+    affected by PYSEC-2026-311, but that pin is only half the argument: the other half is
+    that the embedded client never opens the HTTP surface the advisory targets. `HttpClient`
+    or `AsyncHttpClient` would, and would do it quietly, because nothing else in the build
+    would change. The pin and this check hold that position together.
 
-    So the pin and this check hold the position together. Adopting a Chroma server means
-    reassessing the advisory first, deliberately, rather than discovering it later.
+    That reasoning is entirely about one project's dependencies. It used to live in this
+    module as `check_no_chroma_server_client`, called unconditionally, which meant a control
+    plane intended for reuse carried an argument about Chroma into every repository that
+    adopted it (Issue #93). The mechanism is generic; the rule is the consumer's.
     """
+    package = package_dir()
+    rules = project().get("forbidden_call_sites", [])
+    if not package or not rules or not package.is_dir():
+        return []
+
+    compiled = [(re.compile(rule["pattern"]), rule["message"]) for rule in rules]
     failures: list[str] = []
-    for path in sorted(PACKAGE.rglob("*.py")):
+    for path in sorted(package.rglob("*.py")):
         text = path.read_text(encoding="utf-8", errors="replace")
         for number, line in enumerate(text.splitlines(), start=1):
-            if CHROMA_SERVER_CLIENT.search(code_only(line)):
-                failures.append(
-                    f"{path.relative_to(ROOT).as_posix()}:{number}: uses a Chroma HTTP client, "
-                    "which exposes the surface PYSEC-2026-311 targets; the pin to chromadb<1.0 "
-                    "assumes embedded use, so reassess that advisory before adopting a server"
-                )
+            stripped = code_only(line)
+            for pattern, message in compiled:
+                if pattern.search(stripped):
+                    failures.append(f"{path.relative_to(ROOT).as_posix()}:{number}: {message}")
     return failures
 
 
@@ -392,7 +421,7 @@ def main() -> int:
     failures = check_pyproject(PYPROJECT.read_text(encoding="utf-8"))
     failures += check_requirements(requirements)
     failures += check_audit_target(CONFIG.read_text(encoding="utf-8"))
-    failures += check_no_chroma_server_client()
+    failures += check_forbidden_call_sites()
     if args.artifacts:
         failures += check_artifacts(args.artifacts, declared(requirements))
         failures += check_packaged_assets(args.artifacts)

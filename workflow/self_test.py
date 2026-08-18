@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +58,9 @@ HOOK_COMMAND = re.compile(
 SUBPROCESS_READERS = {"run", "check_output", "Popen"}
 # Redirection targets that hand output nowhere a codec could apply.
 NON_CAPTURING_TARGETS = {"DEVNULL", "STDOUT"}
-EXECUTABLES = (
+# The control plane's own entry points. These ship with it and are required wherever it is
+# adopted.
+CONTROL_PLANE_EXECUTABLES = (
     "flow",
     "ci/run",
     "scripts/bootstrap",
@@ -64,11 +68,19 @@ EXECUTABLES = (
     "scripts/claude-lease",
     "scripts/claude-exec",
     "scripts/validate-workflow",
-    "ops/deploy-development",
-    "ops/deploy-production",
-    "ops/healthcheck",
-    "ops/rollback-production",
 )
+
+
+def executables(config: dict) -> tuple[str, ...]:
+    """Everything that must exist and be executable.
+
+    The consumer's own scripts are declared in `project.executables` rather than listed here.
+    The four `ops/*` deployment adapters used to be hard-coded, so a copy of this control
+    plane without an `ops/` directory failed `check_executables` on the first run it ever
+    did -- which is every adopter, on day one (Issue #93).
+    """
+    declared = config.get("project", {}).get("executables", [])
+    return CONTROL_PLANE_EXECUTABLES + tuple(str(path) for path in declared)
 
 
 def load_json(path: Path, failures: list[str]) -> Any:
@@ -153,6 +165,87 @@ def check_workflow_policy() -> list[str]:
         f"check_workflow_policy.py exited {policy.returncode} without reporting a failure, "
         f"so it did not complete: {tail}"
     ]
+
+
+# The directories that get copied verbatim into a repository adopting this control plane.
+# `.claude-workflow.json`, `pyproject.toml`, `ci/requirements-ci.txt` and `ci/mypy-advisory.ini`
+# are deliberately absent: those are the consumer's own files, and naming a package in them is
+# correct rather than coupling.
+# Trailing separators matter: `.claude` as a bare prefix also matches `.claude-workflow.json`,
+# which is the consumer's own file and the very place these values are supposed to live.
+PORTABLE_TREES = ("workflow/", "ci/", ".claude/")
+PORTABLE_EXCEPTIONS = {"ci/requirements-ci.txt", "ci/mypy-advisory.ini"}
+
+
+def commentary_lines(source: str) -> set[int]:
+    """Lines that are comment or docstring, so prose is not read as a dependency.
+
+    A module that *explains* why Knowledge Nexus pins chromadb is not coupled to chromadb;
+    a module that assigns `WITNESS = "chromadb"` is. The distinction is the whole point of
+    the check below, and without it the check is a spell-checker that fires on its own
+    commit message.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not body or not isinstance(body[0], ast.Expr):
+            continue
+        value = body[0].value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            lines.update(range(body[0].lineno, (body[0].end_lineno or body[0].lineno) + 1))
+
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.COMMENT:
+                lines.add(token.start[0])
+    except (tokenize.TokenError, IndentationError):
+        pass
+    return lines
+
+
+def check_no_product_names(config: dict) -> list[str]:
+    """No file that ships with the control plane may name the product it is shipping with.
+
+    Fixing the seven instances Issue #93 found would leave the eighth free to appear, and it
+    would appear the same way the first seven did: someone reaches for a value, the value is
+    right there in the repository, and nothing objects. This objects.
+
+    The names are taken from the configuration rather than written here, so the check works
+    unchanged in whatever repository adopts the plane -- including this one, where it is the
+    thing keeping the extraction honest between now and the fork.
+    """
+    project = config.get("project", {})
+    names = {str(project.get("package_dir") or ""), str(project.get("typed_advisory_witness") or "")}
+    names = {name for name in names if name}
+    if not names:
+        return []
+
+    failures = []
+    for relative in sorted(tracked_files()):
+        if not relative.startswith(PORTABLE_TREES) or relative in PORTABLE_EXCEPTIONS:
+            continue
+        path = ROOT / relative
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        skip = commentary_lines(text) if relative.endswith(".py") else set()
+        for number, line in enumerate(text.splitlines(), start=1):
+            if number in skip:
+                continue
+            for name in sorted(names):
+                if name in line:
+                    failures.append(
+                        f"{relative}:{number}: names {name!r}, but this file is part of the "
+                        "portable control plane; read it from .claude-workflow.json instead"
+                    )
+    return failures
 
 
 def check_deny_rules(hooks_config: Any) -> list[str]:
@@ -275,9 +368,9 @@ def check_hook_entry(event: str, hook: dict) -> list[str]:
     return failures
 
 
-def check_executables() -> list[str]:
+def check_executables(config: dict) -> list[str]:
     failures = []
-    for relative in EXECUTABLES:
+    for relative in executables(config):
         path = ROOT / relative
         if not path.exists():
             failures.append(f"missing required executable: {relative}")
@@ -565,10 +658,11 @@ def main() -> int:
     failures += check_hooks(hooks_config)
     failures += check_deny_rules(hooks_config)
     failures += check_policy_matchers(hooks_config)
-    failures += check_executables()
+    failures += check_executables(config)
     failures += check_pr_template()
     failures += check_labels(config)
     failures += check_stage_commands(config)
+    failures += check_no_product_names(config)
     warnings += collect_warnings(config)
     failures += check_tracked_artifacts()
     failures += check_subprocess_decoding()

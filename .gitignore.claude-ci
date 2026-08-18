@@ -1,0 +1,13 @@
+# Claude Code CI workflow local state
+.ci-venv/
+artifacts/ci/
+.claude/session-cache/
+.worktrees/
+artifacts/claude/
+artifacts/dist/
+artifacts/release/
+
+# Per-machine Claude Code settings. Holds local permission grants, so it is
+# deliberately never shared: the checked-in .claude/settings.json is the
+# authoritative policy for everyone.
+.claude/settings.local.json
