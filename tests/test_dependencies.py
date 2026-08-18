@@ -27,8 +27,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "workflow"))
 
+import check_dependencies  # noqa: E402
 from check_dependencies import (  # noqa: E402
     check_artifacts,
+    check_audit_target,
     check_forbidden_call_sites,
     check_packaged_assets,
     check_pyproject,
@@ -82,7 +84,7 @@ def consumer(tmp_path: Path, monkeypatch, **project_fields) -> Path:
     (root / ".claude-workflow.json").write_text(json.dumps(CONSUMER_CONFIG), encoding="utf-8")
 
     monkeypatch.setattr(check_dependencies, "ROOT", root)
-    monkeypatch.setattr(check_dependencies, "REQUIREMENTS", root / "requirements.txt")
+    monkeypatch.setattr(check_dependencies, "requirements_path", lambda: root / "requirements.txt")
     monkeypatch.setattr(check_dependencies, "PYPROJECT", root / "pyproject.toml")
     monkeypatch.setattr(check_dependencies, "CONFIG", root / ".claude-workflow.json")
     monkeypatch.setattr(check_dependencies, "project", lambda: project_fields)
@@ -440,3 +442,47 @@ def test_the_artifacts_flag_runs_the_asset_check(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["check_dependencies.py", "--artifacts", str(tmp_path / "dist")])
     assert main() == 1
     assert f"does not contain {ASSET}" in capsys.readouterr().out
+
+
+# ------------------------------------------------- the manifest name is the consumer's
+
+
+def test_the_audit_target_defaults_to_requirements_txt(tmp_path, monkeypatch):
+    """An adopter that declares nothing keeps the behaviour this module was written with."""
+    consumer(tmp_path, monkeypatch)
+
+    assert check_dependencies.manifest() == "requirements.txt"
+    assert check_audit_target(json.dumps(CONSUMER_CONFIG)) == []
+
+
+def test_an_audit_of_a_differently_named_manifest_is_accepted(tmp_path, monkeypatch):
+    """The defect: a correct configuration was rejected for not naming a literal.
+
+    This repository audits `ci/requirements-ci.txt`, which does not contain the substring
+    `requirements.txt`, so every consumer whose manifest sits anywhere else failed a check
+    that was right about the requirement and wrong about the filename (Issue #9).
+    """
+    consumer(tmp_path, monkeypatch, dependency_manifest="ci/requirements-ci.txt")
+    config = {
+        "commands": {"security": ["pip-audit -r ci/requirements-ci.txt --strict"]},
+        "stages": {"audit": ["security"]},
+    }
+
+    assert check_audit_target(json.dumps(config)) == []
+
+
+def test_an_audit_that_scans_a_different_file_is_still_rejected(tmp_path, monkeypatch):
+    """Configurable is not unenforced: it must still be the declared manifest."""
+    consumer(tmp_path, monkeypatch, dependency_manifest="ci/requirements-ci.txt")
+    config = {
+        "commands": {"security": ["pip-audit -r somewhere-else.txt --strict"]},
+        "stages": {"audit": ["security"]},
+    }
+
+    assert check_audit_target(json.dumps(config)) != []
+
+
+def test_the_delegation_must_read_the_declared_manifest(tmp_path, monkeypatch):
+    consumer(tmp_path, monkeypatch, dependency_manifest="deps.txt")
+
+    assert any("deps.txt is the file" in failure for failure in check_pyproject(DELEGATING))
