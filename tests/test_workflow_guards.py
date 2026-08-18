@@ -558,9 +558,9 @@ def test_the_gate_stages_still_name_the_checks_that_matter(stage):
     """
     config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
     required = {
-        "release": {"security", "unit"},
-        "pr": {"unit"},
-        "nightly": {"security", "unit"},
+        "release": {"security", "unit", "coverage"},
+        "pr": {"unit", "coverage"},
+        "nightly": {"security", "unit", "coverage"},
         "audit": {"security"},
     }
 

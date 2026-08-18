@@ -114,6 +114,9 @@
     "unit": [
       "\"$PROJECT_PYTHON\" -m pytest -q"
     ],
+    "coverage": [
+      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=workflow --cov=ci --cov-report=term --cov-fail-under=42"
+    ],
     "security": [
       "pip-audit -r ci/requirements-ci.txt --strict"
     ],
@@ -134,15 +137,18 @@
       "typecheck"
     ],
     "pr": [
-      "unit"
+      "unit",
+      "coverage"
     ],
     "release": [
       "security",
-      "unit"
+      "unit",
+      "coverage"
     ],
     "nightly": [
       "security",
-      "unit"
+      "unit",
+      "coverage"
     ],
     "audit": [
       "security"
