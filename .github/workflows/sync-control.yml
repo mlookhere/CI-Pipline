@@ -4,7 +4,14 @@ on:
   issues:
     types: [opened, edited, labeled, unlabeled, closed, reopened]
   pull_request_target:
-    types: [opened, synchronize, reopened, closed, labeled, unlabeled, ready_for_review, converted_to_draft]
+    # Lifecycle only. `labeled`, `unlabeled` and `synchronize` were here and could not change
+    # what this workflow renders: `open_issues_and_prs` reads a pull request's number, title,
+    # headRefName, baseRefName, url and statusCheckRollup, and never its labels, while check
+    # status arrives accurately through the `workflow_run` trigger below rather than on push.
+    # What they did do was fire three events in three seconds every time `./flow pr` created a
+    # pull request and then added its risk labels, so the first two runs were cancelled by the
+    # third -- and a cancelled run is reported as a failed check (Issue #24).
+    types: [opened, reopened, closed, ready_for_review, converted_to_draft]
   workflow_run:
     # Only the workflows this repository actually has. A name here that matches nothing
     # never fires, so a stale entry is a trigger that silently does not exist.
