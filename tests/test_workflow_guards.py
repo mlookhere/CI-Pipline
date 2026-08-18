@@ -383,3 +383,71 @@ def test_the_committed_settings_satisfy_the_written_policy():
 )
 def test_a_malformed_permissions_block_is_not_read_as_compliant(config):
     assert self_test.check_deny_rules(config) != []
+
+
+# Issue #92. `ci/run.py` skips an empty command group in silence, so a stage could name a
+# check it never ran and report success. The `release` stage did that seven times.
+
+
+def test_a_stage_naming_an_empty_group_fails():
+    config = {"stages": {"release": ["unit", "sbom"]}, "commands": {"unit": ["pytest"], "sbom": []}}
+
+    failures = self_test.check_stage_commands(config)
+
+    assert failures, "a stage that runs nothing for a named group was accepted"
+    assert "'release'" in failures[0]
+    assert "'sbom'" in failures[0]
+
+
+def test_a_stage_naming_an_undefined_group_fails():
+    """A typo in a stage list is the same failure as an empty group: nothing runs."""
+    config = {"stages": {"pr": ["unti"]}, "commands": {"unit": ["pytest"]}}
+
+    assert self_test.check_stage_commands(config) != []
+
+
+def test_the_quality_sentinel_is_not_an_empty_group():
+    """`quality` is expanded from code at `ci/run.py:126-128`, so an empty list is correct."""
+    config = {"stages": {"fast": ["quality"]}, "commands": {"quality": []}}
+
+    assert self_test.check_stage_commands(config) == []
+
+
+def test_the_sentinel_is_still_handled_by_the_runner():
+    """The exemption above is only safe while `ci/run.py` really does expand it."""
+    source = (self_test.ROOT / "ci" / "run.py").read_text(encoding="utf-8")
+
+    for group in self_test.SENTINEL_GROUPS:
+        assert f'group == "{group}"' in source, f"{group} is exempted but the runner does not expand it"
+
+
+def test_an_unreferenced_empty_group_is_allowed():
+    """Placeholders a consumer may fill are fine; claiming one in a stage is not."""
+    config = {"stages": {"pr": ["unit"]}, "commands": {"unit": ["pytest"], "e2e": []}}
+
+    assert self_test.check_stage_commands(config) == []
+
+
+def test_every_shipped_stage_runs_something():
+    """The regression this Issue exists for, pinned against the real configuration file."""
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+
+    assert self_test.check_stage_commands(config) == []
+
+
+@pytest.mark.parametrize("stage", ["release", "pr", "release-artifact"])
+def test_the_gate_stages_still_name_the_checks_that_matter(stage):
+    """Removing a name is the honest fix for an empty group; removing the check is not.
+
+    `release` lost `vulnerability` because `security` already runs pip-audit, and lost
+    `integration` and `generated_check` because neither exists here. It must not have lost
+    the ones that were implemented instead.
+    """
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    required = {
+        "release": {"security", "unit", "coverage", "build", "clean_install", "package_release", "sbom"},
+        "pr": {"unit", "coverage", "build"},
+        "release-artifact": {"package_release", "sbom"},
+    }
+
+    assert required[stage] <= set(config["stages"][stage])

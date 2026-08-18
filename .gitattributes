@@ -1,0 +1,15 @@
+# Three files were committed with CRLF endings while the other 156 use LF. That is a
+# historical accident, but rewriting them would bury a real change under a whole-file diff,
+# so the endings are declared instead of normalised.
+#
+# The reason this file exists at all is that `post_tool_review.py` runs `git diff --check`
+# after every edit, and git counts the CR in a CRLF line as trailing whitespace. Any edit to
+# one of these files therefore failed the post-edit validator and blocked the session --
+# including the README update Issue #92 requires. `whitespace=cr-at-eol` tells git the CR is
+# intentional here, which is exactly what it means.
+#
+# New files should use LF. Do not add entries here to make a new CRLF file acceptable;
+# normalise the file instead.
+README.md whitespace=cr-at-eol
+workflow/render_claude_review.py whitespace=cr-at-eol
+tests/test_claude_review_render.py whitespace=cr-at-eol
