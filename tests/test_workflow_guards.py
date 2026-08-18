@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +21,10 @@ sys.path.insert(0, str(ROOT / "workflow"))
 # E402: `workflow/` is not an importable package, so sys.path has to be extended first.
 # Suppressed for that reason alone, matching tests/test_workflow_policy.py.
 import self_test  # noqa: E402
+from check_workflow_policy import job_blocks  # noqa: E402
+
+# A job carrying this marker reports rather than gates, so it is not a required check.
+ADVISORY_MARKER = "# gating: no"
 
 
 def _rejects(source: str) -> bool:
@@ -543,19 +548,129 @@ def test_the_token_control_block_its_readers_expect_is_declared():
     }
 
 
-@pytest.mark.parametrize("stage", ["release", "pr", "release-artifact"])
+@pytest.mark.parametrize("stage", ["release", "pr", "nightly", "audit"])
 def test_the_gate_stages_still_name_the_checks_that_matter(stage):
     """Removing a name is the honest fix for an empty group; removing the check is not.
 
-    `release` lost `vulnerability` because `security` already runs pip-audit, and lost
-    `integration` and `generated_check` because neither exists here. It must not have lost
-    the ones that were implemented instead.
+    The stages here lost `build`, `clean_install`, `package_release`, `sbom` and
+    `dependency_sync` because this repository has no distribution to build and building one
+    is not what a vendored control plane is for. They must not lose the ones that can run.
     """
     config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
     required = {
-        "release": {"security", "unit", "coverage", "build", "clean_install", "package_release", "sbom"},
-        "pr": {"unit", "coverage", "build"},
-        "release-artifact": {"package_release", "sbom"},
+        "release": {"security", "unit"},
+        "pr": {"unit"},
+        "nightly": {"security", "unit"},
+        "audit": {"security"},
     }
 
     assert required[stage] <= set(config["stages"][stage])
+
+
+# ---------------------------------------------------------- how the gates are wired up
+#
+# These moved here from tests/test_dependencies.py with the extraction. They never were
+# about dependency declarations -- they are about whether a job that runs is a job that
+# blocks, which is the same question `check_stage_commands` above asks of a stage.
+
+
+def _pr_workflow() -> str:
+    return (self_test.ROOT / ".github" / "workflows" / "ci-pr.yml").read_text(encoding="utf-8")
+
+
+def _config() -> dict:
+    return json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+
+
+def test_a_dependency_audit_runs_on_every_pull_request():
+    """Before this, findings surfaced only at release -- weeks after the change."""
+    assert "security" in _config()["stages"]["audit"]
+
+
+def test_the_audit_stage_has_a_job_on_the_pull_request_workflow():
+    """A stage nothing invokes is a stage that never runs."""
+    workflow = _pr_workflow()
+    assert "./ci/run audit" in workflow
+    assert "pull_request" in workflow
+
+
+def test_the_audit_blocks_rather_than_reports():
+    """`continue-on-error` or a `|| true` would make this advisory, which it is not.
+
+    The job body is located by parsing rather than by slicing between two literals:
+    slicing assumed `audit` precedes `pr-tests`, and reordering them would have made the
+    slice empty and this assertion vacuous.
+    """
+    blocks = dict(job_blocks(_pr_workflow()))
+    assert "audit" in blocks, sorted(blocks)
+    assert "continue-on-error" not in blocks["audit"]
+    assert all("||" not in command for command in _config()["commands"]["security"])
+
+
+def test_the_audit_does_not_fall_back_past_strict():
+    """`pip-audit --strict || pip-audit` re-runs without --strict and masks the failure."""
+    commands = _config()["commands"]["security"]
+    assert commands == ["pip-audit -r ci/requirements-ci.txt --strict"], commands
+
+
+def test_every_pull_request_job_is_a_required_check():
+    """A job that runs but is not required is a check that reports, not one that blocks.
+
+    Easy to get wrong in the direction that does not announce itself: adding a gating job
+    and forgetting this list leaves a check whose failure stops nothing, and removing a job
+    without removing its name leaves a required check that never reports, which blocks
+    every merge instead. Both are silent until a pull request is already open.
+    """
+    required = _config()["github"]["branch_protection"]["integration"]["required_checks"]
+    gating = {}
+    for job, body in job_blocks(_pr_workflow()):
+        named = re.search(r"(?m)^    name: (.+?)\s*$", body)
+        # An advisory job reports and never fails, so requiring it would be meaningless.
+        # Recognised by an explicit marker, not by its name or by what its comments
+        # happen to mention: matching on 'advisory' anywhere would silently drop a
+        # gating job called 'Security advisory scan' from this check.
+        advisory = ADVISORY_MARKER in body
+        if named and not advisory:
+            gating[job] = named.group(1)
+    assert gating, "no gating job names found; this test is pinned to the wrong shape"
+    missing = [name for name in gating.values() if name not in required]
+    assert missing == [], f"jobs that run but do not gate: {missing}"
+
+
+def test_the_fast_gate_stays_hermetic():
+    """The advisory config exists so this setting never has to be relaxed.
+
+    Relaxing `no_site_packages` to "fix" a typed finding stops the fast gate being
+    reproducible, and one third-party release shipping stubs for a newer Python then
+    collapses the whole typecheck into a single unrelated parse error.
+    """
+    pyproject = (self_test.ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "no_site_packages = true" in pyproject
+    advisory = (self_test.ROOT / "ci" / "mypy-advisory.ini").read_text(encoding="utf-8")
+    # The setting, not the word: the advisory config explains the trade-off in a comment,
+    # and an assertion that cannot tell those apart is one that fails for the wrong reason.
+    settings = [line for line in advisory.splitlines() if not line.lstrip().startswith("#")]
+    assert not any("no_site_packages" in line for line in settings), (
+        "the advisory config must see third-party types"
+    )
+
+
+def test_no_gating_stage_uses_the_advisory_config():
+    """The advisory config must never become the one a blocking stage runs.
+
+    Empty here rather than `{"typed-advisory"}`: this repository has no third-party runtime
+    dependencies to witness, so it runs the advisory check nowhere at all. The assertion is
+    kept because what it forbids is what matters -- the advisory config reaching a stage
+    that gates -- and that stays forbidden whether or not one runs it at all.
+    """
+    config = _config()
+    using = {
+        stage
+        for stage, groups in config["stages"].items()
+        for group in groups
+        if any(
+            "mypy-advisory" in command or "typed_advisory" in command
+            for command in config["commands"].get(group) or []
+        )
+    }
+    assert using == set(), using
