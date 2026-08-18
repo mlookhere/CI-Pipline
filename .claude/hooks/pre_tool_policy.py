@@ -6,6 +6,7 @@ import fnmatch
 import os
 import re
 import shlex
+import sys
 
 from common import *
 
@@ -110,6 +111,21 @@ def pushed_refs(command: str) -> list[str]:
     return refs if len(words) > 1 else []
 
 
+def destination_branch(ref: str) -> str:
+    """The branch name a refspec writes to, stripped of everything that hides it.
+
+    Three spellings all name `dev` and none of them is the bare word: `+dev` (a force push),
+    `HEAD:refs/heads/dev` (a fully qualified destination) and `:dev` (a deletion). Only the
+    half after the last colon is written -- in `src:dst` the source is read, so a task branch
+    pushed to `dev` is a push to `dev` no matter what it is called locally.
+    """
+    ref = ref.lstrip("+").rsplit(":", 1)[-1]
+    for prefix in ("refs/heads/", "heads/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return ref
+
+
 def protected_push(root: Path, command: str) -> str | None:
     """Why this push is refused, or None.
 
@@ -124,12 +140,18 @@ def protected_push(root: Path, command: str) -> str | None:
     task branch, with a message naming a prohibition the command did not violate. It is the
     same mistake Issue #78 fixed for risk labels -- the wrong checkout answering -- in the
     one place #78 did not reach.
+
+    The destination is read from the refs, not from the command text. Searching the text was
+    the third defect in this guard (Issue #90): it required the protected name to sit between
+    a space-or-colon and a space-or-end, so `git push origin +dev` -- a force push to `dev` --
+    did not match, and `pushed_refs` returning `['+dev']` then made it too non-bare for the
+    rule below to catch either. A ref is a ref; parse it once and judge the parse.
     """
     branches = list(config(root).get("branches", {}).values()) or ["main", "master", "dev"]
     if not re.search(r"(?i)\bgit\s+push\b", command):
         return None
     named = pushed_refs(command)
-    if any(re.search(rf"(?:\s|:){re.escape(name)}(?:\s|$)", command) for name in branches):
+    if any(destination_branch(ref) in branches for ref in named):
         return "Direct pushes to integration or production branches are prohibited; use a pull request."
     if not named and branch(root) in branches:
         return (
@@ -140,17 +162,23 @@ def protected_push(root: Path, command: str) -> str | None:
     return None
 
 
+def audit(root: Path, event_name: str, payload: dict) -> None:
+    """Record what happened, and never let recording it change what happens.
+
+    `log_event` opens a file, so it can raise for reasons that have nothing to do with the
+    decision being logged: a read-only `.git`, a full disk, a path Windows will not accept.
+    Raising out of `deny` used to mean the denial was never emitted, and because
+    `.claude/hooks/run` execs Python the hook then exited 1 -- a non-blocking error -- so the
+    command that was about to be refused ran instead (Issue #90). Telemetry is not worth a
+    bypass.
+    """
+    try:
+        log_event(root, event_name, payload)
+    except Exception:
+        pass
+
+
 def deny(root: Path, event: dict, issue_no: int | None, reason: str, category: str) -> None:
-    log_event(
-        root,
-        "PolicyDecision",
-        {
-            "session_id": event.get("session_id"),
-            "issue": issue_no,
-            "decision": "deny",
-            "category": category,
-        },
-    )
     emit(
         {
             "hookSpecificOutput": {
@@ -159,6 +187,16 @@ def deny(root: Path, event: dict, issue_no: int | None, reason: str, category: s
                 "permissionDecisionReason": reason,
             }
         }
+    )
+    audit(
+        root,
+        "PolicyDecision",
+        {
+            "session_id": event.get("session_id"),
+            "issue": issue_no,
+            "decision": "deny",
+            "category": category,
+        },
     )
 
 
@@ -236,11 +274,25 @@ def lease_conflict(
     )
 
 
+def forced_push(command: str) -> str | None:
+    """A leading `+` on a refspec is a force push, spelled without saying so.
+
+    The DENY entry above matches `--force`, `--force-with-lease` and `-f`, which is every
+    spelling that looks like one. `git push origin +work/52-x` is the same operation and
+    matched none of them, so the prohibition had a hole the width of one character
+    (Issue #90). Read from the refs rather than the command text, so a `+` inside an
+    unrelated argument later on the line is not mistaken for one.
+    """
+    if any(ref.startswith("+") for ref in pushed_refs(command)):
+        return "Force-pushing is prohibited by the standard workflow; '+ref' is a force push."
+    return None
+
+
 def command_violation(root: Path, command: str) -> str | None:
     for pattern, reason in DENY:
         if re.search(pattern, command, re.I):
             return reason
-    return protected_push(root, command)
+    return forced_push(command) or protected_push(root, command)
 
 
 def plain_spelling(value: str) -> str:
@@ -666,7 +718,7 @@ def main() -> int:
         )
         return 0
 
-    log_event(
+    audit(
         root,
         "PreToolUse",
         {
@@ -679,5 +731,28 @@ def main() -> int:
     return 0
 
 
+def guarded_main() -> int:
+    """Run the policy, and block rather than shrug if it cannot run.
+
+    Nothing in `main` was wrapped, so any unexpected exception -- in a lease read, a label
+    lookup, a subprocess that timed out -- left Python exiting 1. On `PreToolUse` that is a
+    non-blocking error: the message is surfaced and the tool call proceeds anyway. So the one
+    hook whose entire job is refusing commands stopped refusing them whenever it broke, which
+    is the failure mode `.claude/hooks/run` already refuses to accept for itself (`run:24-31`
+    picks 2, not 1, for exactly this hook). This makes the Python side agree with the wrapper
+    (Issue #90).
+    """
+    try:
+        return main()
+    except Exception as error:
+        print(
+            f"pre_tool_policy failed to evaluate this command: {type(error).__name__}: {error}\n"
+            "Refusing it rather than allowing an unevaluated command. "
+            "Repository policy hooks are NOT enforcing until this is fixed.",
+            file=sys.stderr,
+        )
+        return 2
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(guarded_main())

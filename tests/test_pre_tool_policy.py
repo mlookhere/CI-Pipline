@@ -1111,6 +1111,20 @@ PUSHES_THAT_MUST_BE_REFUSED = [
     pytest.param("git push > push.log", "dev", id="bare-push-redirected-to-a-file"),
     pytest.param("git push && echo done", "dev", id="bare-push-then-another-statement"),
     pytest.param("git push; echo done", "master", id="bare-push-before-a-semicolon"),
+    # Issue #90. `protected_push` parsed the refs and then threw the parse away, matching the
+    # protected name against the raw command between a space-or-colon and a space-or-end.
+    # Every spelling that puts another character next to the name was therefore allowed, and
+    # `pushed_refs` returning something non-empty stopped the bare-push rule catching them
+    # too. The destination is now read from the ref.
+    pytest.param("git push origin HEAD:refs/heads/dev", "work/52-x", id="fully-qualified-destination"),
+    pytest.param("git push origin HEAD:heads/master", "work/52-x", id="heads-without-the-refs-prefix"),
+    pytest.param("git push origin dev:dev", "work/52-x", id="same-name-on-both-halves"),
+    pytest.param(
+        "git push origin work/52-x:refs/heads/master", "work/52-x", id="task-branch-onto-qualified-production"
+    ),
+    # A deletion writes the destination too, and writes nothing to it.
+    pytest.param("git push origin :dev", "work/52-x", id="deleting-the-integration-branch"),
+    pytest.param("git push origin --delete master", "work/52-x", id="deleting-production-by-switch"),
 ]
 
 
@@ -1134,6 +1148,11 @@ PUSHES_THAT_MUST_BE_ALLOWED = [
     # redirection, which is how this session actually invokes git.
     pytest.param("git push origin work/52-x 2>&1 | tail -2", "dev", id="real-refspec-then-a-pipe"),
     pytest.param("git push origin work/52-x > push.log", "dev", id="real-refspec-then-a-file"),
+    # Issue #90's narrowing reads the destination half of a refspec, so a qualified push of a
+    # task branch has to survive it. This is the direction that breaks working sessions.
+    pytest.param("git push origin HEAD:refs/heads/work/18-x", "dev", id="qualified-task-destination"),
+    pytest.param("git push origin work/52-x:refs/heads/work/52-x", "dev", id="qualified-both-halves"),
+    pytest.param("git push origin work/52-x --dry-run", "dev", id="switch-after-the-refspec"),
 ]
 
 
@@ -1170,3 +1189,96 @@ def test_a_force_push_of_a_task_branch_is_still_refused(root, monkeypatch):
     reason = pre_tool_policy.command_violation(root, "git push --force origin work/52-x")
     assert reason is not None
     assert "Force-pushing" in reason
+
+
+# Issue #90. The prohibition on force-pushing was written as a regex over `--force`,
+# `--force-with-lease` and `-f` -- every spelling that announces itself. `+ref` is the same
+# operation and announced nothing, so it matched neither this rule nor, before the fix above,
+# the protected-branch rule.
+
+FORCE_PUSHES_SPELLED_WITH_A_PLUS = [
+    pytest.param("git push origin +dev", id="onto-the-integration-branch"),
+    pytest.param("git push origin +work/52-x", id="onto-a-task-branch"),
+    pytest.param("git push origin +refs/heads/master", id="onto-qualified-production"),
+    pytest.param("git push origin +HEAD:dev", id="on-a-colon-refspec"),
+]
+
+
+@pytest.mark.parametrize("command", FORCE_PUSHES_SPELLED_WITH_A_PLUS)
+def test_a_leading_plus_is_recognised_as_a_force_push(root, monkeypatch, command):
+    _on_branch(monkeypatch, "work/52-x")
+    reason = pre_tool_policy.command_violation(root, command)
+    assert reason is not None, command
+    assert "Force-pushing" in reason
+
+
+def test_a_plus_outside_the_push_statement_is_not_a_force_push(root, monkeypatch):
+    """The bound that Issue #78 taught the scanners applies here too, or this over-refuses."""
+    _on_branch(monkeypatch, "work/52-x")
+    assert pre_tool_policy.command_violation(root, 'git push origin work/52-x && echo "+dev"') is None
+
+
+def test_a_forced_protected_push_is_refused_by_both_rules_independently(root, monkeypatch):
+    """`+dev` violates two prohibitions, and neither may rely on the other to catch it.
+
+    `command_violation` reports the force-push one because it is checked first, so the
+    protected-branch rule is driven directly here. Otherwise deleting either rule would still
+    leave the test green, and this guard has already been fixed three times.
+    """
+    _on_branch(monkeypatch, "work/52-x")
+    assert pre_tool_policy.protected_push(root, "git push origin +dev") is not None
+    assert pre_tool_policy.forced_push("git push origin +dev") is not None
+
+
+DESTINATIONS = [
+    ("+dev", "dev"),
+    ("dev", "dev"),
+    (":dev", "dev"),
+    ("HEAD:refs/heads/dev", "dev"),
+    ("+refs/heads/master", "master"),
+    ("heads/master", "master"),
+    ("work/52-x:refs/heads/work/52-x", "work/52-x"),
+    ("work/52-x", "work/52-x"),
+    # A remote-tracking ref is not a branch on the remote, so it must not be flattened onto
+    # one: over-reading here would refuse pushes that touch nothing protected.
+    ("refs/remotes/origin/dev", "refs/remotes/origin/dev"),
+]
+
+
+@pytest.mark.parametrize(("ref", "expected"), DESTINATIONS)
+def test_the_destination_is_read_out_of_the_refspec(ref, expected):
+    assert pre_tool_policy.destination_branch(ref) == expected
+
+
+def test_a_denial_survives_a_telemetry_write_failure(root, monkeypatch, capsys):
+    """Issue #90: `deny` logged before it emitted, and the log can fail.
+
+    An OSError there raised out of the hook before the decision was printed, and because
+    `.claude/hooks/run` execs Python the exit status was 1 -- non-blocking -- so the command
+    being refused ran. Recording a decision must never be able to change it.
+    """
+
+    def explode(*_args, **_kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(pre_tool_policy, "log_event", explode)
+    pre_tool_policy.deny(root, {"session_id": "s"}, 90, "no.", "command-policy")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert payload["hookSpecificOutput"]["permissionDecisionReason"] == "no."
+
+
+def test_the_hook_blocks_rather_than_shrugs_when_it_cannot_evaluate(monkeypatch, capsys):
+    """An unevaluated command must not become an allowed one (Issue #90).
+
+    `main` had no top-level handler, so any unexpected exception exited 1, which PreToolUse
+    treats as a non-blocking error -- the surfaced message scrolls past and the tool call
+    proceeds. 2 is the blocking status, and it is what `run` already picks for this hook.
+    """
+
+    def explode() -> int:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pre_tool_policy, "main", explode)
+    assert pre_tool_policy.guarded_main() == 2
+    assert "NOT enforcing" in capsys.readouterr().err
