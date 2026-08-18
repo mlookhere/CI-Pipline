@@ -91,16 +91,16 @@
   },
   "commands": {
     "bootstrap_local": [
-      "\"$CI_PYTHON\" -m venv .venv",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check --upgrade pip",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -r requirements.txt",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -e \".[dev]\""
+      "\"$CI_PYTHON\" -m pytest --version",
+      "\"$CI_PYTHON\" -m mypy --version",
+      "\"$CI_PYTHON\" -m ruff --version",
+      "\"$CI_PYTHON\" -m pip_audit --version"
     ],
     "bootstrap_ci": [
-      "\"$CI_PYTHON\" -m venv .venv",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check --upgrade pip",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -r requirements.txt",
-      "\"$PROJECT_PYTHON\" -m pip install --disable-pip-version-check -e \".[dev]\""
+      "\"$CI_PYTHON\" -m pytest --version",
+      "\"$CI_PYTHON\" -m mypy --version",
+      "\"$CI_PYTHON\" -m ruff --version",
+      "\"$CI_PYTHON\" -m pip_audit --version"
     ],
     "format_check": [
       "ruff format --check ."
