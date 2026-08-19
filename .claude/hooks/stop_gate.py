@@ -11,6 +11,12 @@ COMPLETE = re.compile(
 )
 
 
+def settled_branches(root: Path) -> set[str]:
+    """The branches where finished work lives, so nothing is in flight to be tracked."""
+    branches = config(root).get("branches", {})
+    return {str(branches.get("integration", "dev")), str(branches.get("production", "master"))}
+
+
 def report_fresh(root: Path) -> bool:
     """A gate that passed on this commit -- not merely a file newer than it.
 
@@ -79,7 +85,11 @@ def main() -> int:
     reasons: list[str] = []
     if git(root, "status", "--porcelain"):
         reasons.append("the working tree is dirty")
-    if issue_no is None:
+    # Only where a task is in flight. `current_issue` reads the number out of the branch name,
+    # so it is None on `dev` and `master` -- correct, and not a defect there: an integration
+    # branch has no task to have an Issue for. Requiring one anyway made every completion claim
+    # after a merge unsatisfiable, and the advice it printed impossible to act on (Issue #55).
+    if issue_no is None and branch(root) not in settled_branches(root):
         reasons.append("there is no controlling Issue")
     if not report_fresh(root):
         reasons.append("there is no fresh machine-readable local CI report for the current commit")
