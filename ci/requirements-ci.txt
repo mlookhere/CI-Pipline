@@ -1,7 +1,7 @@
 pre-commit>=4.6.2
 ruff>=0.16.3
 mypy>=2.3.1
-pytest>=8.0
+pytest>=9.1.1
 pytest-cov>=7.1.0
 lizard>=1.23.0
 detect-secrets>=1.5
