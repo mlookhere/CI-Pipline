@@ -83,12 +83,12 @@
     {
       "number": 3,
       "issue": 98,
-      "status": "active"
+      "status": "complete"
     },
     {
       "number": 4,
       "issue": 99,
-      "status": "ready"
+      "status": "active"
     },
     {
       "number": 5,
