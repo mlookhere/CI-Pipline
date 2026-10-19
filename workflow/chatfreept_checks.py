@@ -10,7 +10,7 @@ import argparse
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"^[a-f0-9]{40}$")
@@ -50,7 +50,7 @@ def protected_names(protection: dict[str, Any]) -> list[str]:
     names = check_names or contexts
     if not names:
         raise ValueError("branch protection declares zero required checks")
-    return names
+    return cast(list[str], names)
 
 
 def check_protection(evidence: dict[str, Any], expected: dict[str, Any]) -> list[str]:
@@ -122,7 +122,11 @@ def check_jobs(evidence: dict[str, Any], runs: dict[int, dict[str, Any]], names:
         if not isinstance(name, str):
             failures.append("job name is missing")
             continue
-        run = runs.get(job.get("run_id"))
+        run_id = job.get("run_id")
+        if type(run_id) is not int:
+            failures.append(f"job {name!r} has no valid workflow run ID")
+            continue
+        run = runs.get(run_id)
         if run is None or job.get("head_sha") != evidence["head_sha"]:
             failures.append(f"job {name!r} lacks a matching exact-head workflow run")
             continue
