@@ -16,7 +16,7 @@ SHA2 = "b" * 40
 
 
 @pytest.fixture
-def request():
+def observation():
     return {
         "actor": "session-one",
         "expected_head_sha": SHA1,
@@ -38,8 +38,8 @@ def request():
     }
 
 
-def test_new_handoff_is_persistable_and_preserves_issue_body(request):
-    output = state.plan_handoff(request)
+def test_new_handoff_is_persistable_and_preserves_issue_body(observation):
+    output = state.plan_handoff(observation)
     assert output["action"] == "update_issue"
     assert output["snapshot"]["revision"] == 1
     assert output["snapshot"]["ci"] == "unverified"
@@ -48,11 +48,11 @@ def test_new_handoff_is_persistable_and_preserves_issue_body(request):
     assert state.read_handoff(output["issue_body"]) == output["snapshot"]
 
 
-def test_same_session_replay_is_idempotent(request):
-    first = state.plan_handoff(request)
-    request["observed"]["issue"]["body"] = first["issue_body"]
-    request["expected_revision"] = 1
-    second = state.plan_handoff(request)
+def test_same_session_replay_is_idempotent(observation):
+    first = state.plan_handoff(observation)
+    observation["observed"]["issue"]["body"] = first["issue_body"]
+    observation["expected_revision"] = 1
+    second = state.plan_handoff(observation)
     assert second["action"] == "unchanged"
     assert second["issue_body"] == first["issue_body"]
 
@@ -66,40 +66,40 @@ def test_same_session_replay_is_idempotent(request):
         ({"pull_requests": None}, "explicit list"),
     ],
 )
-def test_untrusted_github_observations_fail_closed(request, change, message):
-    request["observed"].update(change)
+def test_untrusted_github_observations_fail_closed(observation, change, message):
+    observation["observed"].update(change)
     with pytest.raises(state.Conflict, match=message):
-        state.plan_handoff(request)
+        state.plan_handoff(observation)
 
 
 @pytest.mark.parametrize("field", ["expected_head_sha", "expected_revision", "expected_issue_updated_at"])
-def test_stale_precondition_is_rejected(request, field):
-    request[field] = "wrong"
+def test_stale_precondition_is_rejected(observation, field):
+    observation[field] = "wrong"
     with pytest.raises(state.Conflict, match="stale"):
-        state.plan_handoff(request)
+        state.plan_handoff(observation)
 
 
-def test_active_foreign_lease_refuses_mutation(request):
-    first = state.plan_handoff(request)
-    request["observed"]["issue"]["body"] = first["issue_body"]
-    request["expected_revision"] = 1
-    request["actor"] = "session-two"
+def test_active_foreign_lease_refuses_mutation(observation):
+    first = state.plan_handoff(observation)
+    observation["observed"]["issue"]["body"] = first["issue_body"]
+    observation["expected_revision"] = 1
+    observation["actor"] = "session-two"
     with pytest.raises(state.Conflict, match="different session"):
-        state.plan_handoff(request)
+        state.plan_handoff(observation)
 
 
-def test_expired_lease_can_be_recovered(request):
-    first = state.plan_handoff(request)
-    request["observed"]["issue"]["body"] = first["issue_body"]
-    request["expected_revision"] = 1
-    request["actor"] = "session-two"
-    request["now"] += 1801
-    recovered = state.plan_handoff(request)
+def test_expired_lease_can_be_recovered(observation):
+    first = state.plan_handoff(observation)
+    observation["observed"]["issue"]["body"] = first["issue_body"]
+    observation["expected_revision"] = 1
+    observation["actor"] = "session-two"
+    observation["now"] += 1801
+    recovered = state.plan_handoff(observation)
     assert recovered["snapshot"]["lease"]["holder"] == "session-two"
     assert recovered["snapshot"]["revision"] == 2
 
 
-def test_duplicate_open_prs_are_not_assumed_unique(request):
+def test_duplicate_open_prs_are_not_assumed_unique(observation):
     pr = {
         "number": 108,
         "state": "open",
@@ -108,13 +108,13 @@ def test_duplicate_open_prs_are_not_assumed_unique(request):
         "head": {"ref": "work/98-mcp-state", "sha": SHA1},
         "body": "Refs #98",
     }
-    request["observed"]["pull_requests"] = [pr, dict(pr, number=109)]
+    observation["observed"]["pull_requests"] = [pr, dict(pr, number=109)]
     with pytest.raises(state.Conflict, match="multiple open PRs"):
-        state.plan_handoff(request)
+        state.plan_handoff(observation)
 
 
-def test_existing_pr_resumed_without_creating_another(request):
-    request["observed"]["pull_requests"] = [
+def test_existing_pr_resumed_without_creating_another(observation):
+    observation["observed"]["pull_requests"] = [
         {
             "number": 108,
             "state": "open",
@@ -124,59 +124,59 @@ def test_existing_pr_resumed_without_creating_another(request):
             "body": "Refs #98",
         }
     ]
-    out = state.plan_handoff(request)
+    out = state.plan_handoff(observation)
     assert out["snapshot"]["pr"] == 108
     assert out["snapshot"]["phase"] == "review"
     assert out["snapshot"]["ci"] == "unverified"
 
 
-def test_corrupt_or_duplicate_marker_never_gets_overwritten(request):
+def test_corrupt_or_duplicate_marker_never_gets_overwritten(observation):
     bad = state.START + "\n{bad json}\n" + state.END
-    request["observed"]["issue"]["body"] = bad
+    observation["observed"]["issue"]["body"] = bad
     with pytest.raises(state.Conflict, match="invalid"):
-        state.plan_handoff(request)
-    request["observed"]["issue"]["body"] = state.START + state.START + state.END
+        state.plan_handoff(observation)
+    observation["observed"]["issue"]["body"] = state.START + state.START + state.END
     with pytest.raises(state.Conflict, match="ambiguous"):
-        state.plan_handoff(request)
+        state.plan_handoff(observation)
 
 
-def test_issue_body_backslashes_and_unicode_round_trip(request):
-    request["observed"]["issue"]["body"] = "Windows F:\\\\repo\\\\name — résumé\n"
-    result = state.plan_handoff(request)
+def test_issue_body_backslashes_and_unicode_round_trip(observation):
+    observation["observed"]["issue"]["body"] = "Windows F:\\\\repo\\\\name — résumé\n"
+    result = state.plan_handoff(observation)
     assert "Windows F:\\\\repo\\\\name — résumé" in result["issue_body"]
     assert state.read_handoff(result["issue_body"]) == result["snapshot"]
 
 
-def test_same_session_reentry_with_new_head_requires_new_expected_sha(request):
-    first = state.plan_handoff(request)
-    request["observed"]["issue"]["body"] = first["issue_body"]
-    request["observed"]["branch"]["sha"] = SHA2
-    request["expected_revision"] = 1
+def test_same_session_reentry_with_new_head_requires_new_expected_sha(observation):
+    first = state.plan_handoff(observation)
+    observation["observed"]["issue"]["body"] = first["issue_body"]
+    observation["observed"]["branch"]["sha"] = SHA2
+    observation["expected_revision"] = 1
     with pytest.raises(state.Conflict, match="stale branch head"):
-        state.plan_handoff(request)
-    request["expected_head_sha"] = SHA2
-    assert state.plan_handoff(request)["snapshot"]["head_sha"] == SHA2
+        state.plan_handoff(observation)
+    observation["expected_head_sha"] = SHA2
+    assert state.plan_handoff(observation)["snapshot"]["head_sha"] == SHA2
 
 
-def test_saved_state_from_other_issue_is_rejected(request):
-    first = state.plan_handoff(request)
+def test_saved_state_from_other_issue_is_rejected(observation):
+    first = state.plan_handoff(observation)
     parsed = state.read_handoff(first["issue_body"])
     assert parsed is not None
     parsed["issue"] = 1
-    request["observed"]["issue"]["body"] = state.render_handoff("body", parsed)
-    request["expected_revision"] = 1
+    observation["observed"]["issue"]["body"] = state.render_handoff("body", parsed)
+    observation["expected_revision"] = 1
     with pytest.raises(state.Conflict, match="another Issue"):
-        state.plan_handoff(request)
+        state.plan_handoff(observation)
 
 
-def test_invalid_ttl_and_invalid_actor_fail(request):
-    request["lease_seconds"] = 28801
+def test_invalid_ttl_and_invalid_actor_fail(observation):
+    observation["lease_seconds"] = 28801
     with pytest.raises(state.Conflict, match="TTL"):
-        state.plan_handoff(request)
-    request["lease_seconds"] = 10
-    request["actor"] = ""
+        state.plan_handoff(observation)
+    observation["lease_seconds"] = 10
+    observation["actor"] = ""
     with pytest.raises(state.Conflict, match="actor"):
-        state.plan_handoff(request)
+        state.plan_handoff(observation)
 
 
 def test_cli_uses_only_json_and_exits_on_invalid_input(monkeypatch, capsys):

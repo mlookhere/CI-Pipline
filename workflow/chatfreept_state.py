@@ -130,29 +130,29 @@ def check_preconditions(
     return revision
 
 
-def plan_handoff(request: dict[str, Any]) -> dict[str, Any]:
-    observed = mapping(request.get("observed"), "observed")
-    issue, branch, sha = validate_observation(observed)
-    require(request.get("expected_issue_updated_at") == issue["updated_at"], "stale Issue timestamp")
-    now = request.get("now")
-    ttl = request.get("lease_seconds", 1800)
-    require(positive(now), "now must be a positive epoch second")
-    require(positive(ttl) and ttl <= MAX_LEASE_SECONDS, "lease TTL out of range")
-    saved = read_handoff(issue["body"])
-    if saved:
-        require(saved["repository"] == observed["repository"], "saved handoff belongs to another repository")
-        require(saved["issue"] == issue["number"], "saved handoff belongs to another Issue")
-        require(saved.get("branch") == branch["name"], "saved handoff belongs to another branch")
-    revision = check_preconditions(saved, request, sha, now)
-    prs = matching_prs(observed, branch["name"], issue["number"])
-    pr = prs[0] if prs else None
-    if pr:
-        require(
-            isinstance(pr["head"].get("sha"), str) and pr["head"]["sha"] == sha,
-            "PR head does not match observed work branch",
-        )
+def verify_saved_identity(
+    saved: dict[str, Any] | None, repository: str, issue: int, branch: str
+) -> None:
+    if saved is None:
+        return
+    require(saved["repository"] == repository, "saved handoff belongs to another repository")
+    require(saved["issue"] == issue, "saved handoff belongs to another Issue")
+    require(saved.get("branch") == branch, "saved handoff belongs to another branch")
+
+
+def build_snapshot(
+    observed: dict[str, Any],
+    issue: dict[str, Any],
+    branch: dict[str, Any],
+    sha: str,
+    pr: dict[str, Any] | None,
+    request: dict[str, Any],
+    revision: int,
+    now: int,
+    ttl: int,
+) -> dict[str, Any]:
     phase = "merged" if pr and pr.get("merged") is True else "review" if pr else "developing"
-    snapshot = {
+    return {
         "version": 1,
         "revision": revision + 1,
         "repository": observed["repository"],
@@ -164,11 +164,37 @@ def plan_handoff(request: dict[str, Any]) -> dict[str, Any]:
         "ci": "unverified",
         "lease": {"holder": request["actor"], "expires_at": now + ttl},
     }
-    if saved:
-        comparable = {key: value for key, value in saved.items() if key not in ("revision", "lease")}
-        candidate = {key: value for key, value in snapshot.items() if key not in ("revision", "lease")}
-        if comparable == candidate and saved["lease"]["holder"] == request["actor"]:
-            return {"action": "unchanged", "snapshot": saved, "issue_body": issue["body"]}
+
+
+def unchanged(saved: dict[str, Any] | None, proposed: dict[str, Any], actor: str) -> bool:
+    if saved is None or saved["lease"]["holder"] != actor:
+        return False
+    old = {key: value for key, value in saved.items() if key not in ("revision", "lease")}
+    new = {key: value for key, value in proposed.items() if key not in ("revision", "lease")}
+    return old == new
+
+
+def plan_handoff(request: dict[str, Any]) -> dict[str, Any]:
+    observed = mapping(request.get("observed"), "observed")
+    issue, branch, sha = validate_observation(observed)
+    require(request.get("expected_issue_updated_at") == issue["updated_at"], "stale Issue timestamp")
+    now = request.get("now")
+    ttl = request.get("lease_seconds", 1800)
+    require(positive(now), "now must be a positive epoch second")
+    require(positive(ttl) and ttl <= MAX_LEASE_SECONDS, "lease TTL out of range")
+    saved = read_handoff(issue["body"])
+    verify_saved_identity(saved, observed["repository"], issue["number"], branch["name"])
+    revision = check_preconditions(saved, request, sha, now)
+    prs = matching_prs(observed, branch["name"], issue["number"])
+    pr = prs[0] if prs else None
+    if pr:
+        require(
+            isinstance(pr["head"].get("sha"), str) and pr["head"]["sha"] == sha,
+            "PR head does not match observed work branch",
+        )
+    snapshot = build_snapshot(observed, issue, branch, sha, pr, request, revision, now, ttl)
+    if unchanged(saved, snapshot, request["actor"]):
+        return {"action": "unchanged", "snapshot": saved, "issue_body": issue["body"]}
     return {
         "action": "update_issue",
         "snapshot": snapshot,
