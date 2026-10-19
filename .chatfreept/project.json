@@ -93,12 +93,12 @@
     {
       "number": 5,
       "issue": 100,
-      "status": "active"
+      "status": "complete"
     },
     {
       "number": 6,
       "issue": 101,
-      "status": "ready"
+      "status": "active"
     },
     {
       "number": 7,
