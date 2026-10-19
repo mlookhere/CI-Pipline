@@ -73,7 +73,8 @@ def render_handoff(body: str, state: dict[str, Any]) -> str:
 
 def matching_prs(observation: dict[str, Any], branch: str, issue: int) -> list[dict[str, Any]]:
     raw = observation.get("pull_requests")
-    require(isinstance(raw, list), "pull_requests must be an explicit list, not missing")
+    if not isinstance(raw, list):
+        raise Conflict("pull_requests must be an explicit list, not missing")
     candidates: list[dict[str, Any]] = []
     for entry in raw:
         pr = mapping(entry, "pull_request")
@@ -109,7 +110,8 @@ def validate_observation(observation: dict[str, Any]) -> tuple[dict[str, Any], d
         "work branch does not belong to Issue",
     )
     sha = branch.get("sha")
-    require(isinstance(sha, str) and SHA.fullmatch(sha) is not None, "work branch SHA missing or invalid")
+    if not isinstance(sha, str) or SHA.fullmatch(sha) is None:
+        raise Conflict("work branch SHA missing or invalid")
     return issue, branch, sha
 
 
@@ -176,8 +178,10 @@ def plan_handoff(request: dict[str, Any]) -> dict[str, Any]:
     require(request.get("expected_issue_updated_at") == issue["updated_at"], "stale Issue timestamp")
     now = request.get("now")
     ttl = request.get("lease_seconds", 1800)
-    require(positive(now), "now must be a positive epoch second")
-    require(positive(ttl) and ttl <= MAX_LEASE_SECONDS, "lease TTL out of range")
+    if type(now) is not int or now <= 0:
+        raise Conflict("now must be a positive epoch second")
+    if type(ttl) is not int or ttl <= 0 or ttl > MAX_LEASE_SECONDS:
+        raise Conflict("lease TTL out of range")
     saved = read_handoff(issue["body"])
     verify_saved_identity(saved, observed["repository"], issue["number"], branch["name"])
     revision = check_preconditions(saved, request, sha, now)
