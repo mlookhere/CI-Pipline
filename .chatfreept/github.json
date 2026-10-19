@@ -150,5 +150,8 @@
     "typed_advisory_witness": "",
     "executables": [],
     "forbidden_call_sites": []
+  },
+  "tracking": {
+    "control_issue_max_active_rows": 20
   }
 }
