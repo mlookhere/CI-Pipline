@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / ".claude-workflow.json"
+CONFIG_PATH = ROOT / ".chatfreept" / "ci.json"
 ARTIFACT_DIR = ROOT / "artifacts" / "ci"
 
 # workflow/ is not an importable package, so the path is extended rather than the resolver
@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "workflow"))
 # E402 is suppressed for that reason alone -- the import cannot resolve until sys.path is
 # extended above. Same pattern as tests/test_workflow_policy.py.
 from bash_tools import bash_command  # noqa: E402
+from chatfreept_stages import read_config  # noqa: E402
 
 
 def ci_home() -> Path:
@@ -35,11 +36,9 @@ def ci_home() -> Path:
 
 def load_config() -> dict[str, Any]:
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise SystemExit(f"missing {CONFIG_PATH}") from None
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"invalid {CONFIG_PATH}: {exc}") from exc
+        return read_config(ROOT)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def run_command(command: str, env: dict[str, str]) -> dict[str, Any]:
