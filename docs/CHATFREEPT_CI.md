@@ -41,3 +41,7 @@ Continue, Needs input, Plan ready, Testing, Complete and Error are **reporting s
 ## Runtime-neutral command stages (slice #97)
 
 The execution source of truth is now `.chatfreept/ci.json` (schema version 1). `./ci/run <stage>` and `ci/quality.py` read it directly. `workflow/chatfreept_stages.py` rejects unknown schema keys and stage names, missing/blank/placeholder command groups, duplicate stage groups, and any drift from existing `.claude-workflow.json` while older tools are still being migrated. **Both configs must match until the legacy tools are replaced in slice #7.** This is intentionally fail-closed rather than a fallback to the old configuration. No job name, test threshold or command was changed in this migration.
+
+## Runtime and GitHub policy cutover (slice #102 in progress)
+
+The headless CI virtual environment is now provisioned under `~/.local/share/chatfreept-ci/v1`, overridable by `CHATFREEPT_CI_HOME`. Both `scripts/bootstrap` and `ci/run.py` resolve that exact location. `.chatfreept/github.json` is the checked-in policy input for the ChatGPT project contract; its stage and command sets must match `.chatfreept/ci.json`. The legacy configuration and hook-era tests remain during a verified transition; this is not yet a claim that the entire repository is Claude-free.

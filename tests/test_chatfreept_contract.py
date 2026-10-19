@@ -24,7 +24,7 @@ spec.loader.exec_module(ci_run)
 @pytest.fixture
 def inputs():
     project = json.loads((ROOT / ".chatfreept" / "project.json").read_text(encoding="utf-8"))
-    legacy = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    legacy = json.loads((ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
     workflows = {
         path: (ROOT / path).read_text(encoding="utf-8")
         for paths in contract.WORKFLOWS.values()
@@ -113,3 +113,17 @@ def test_runner_cannot_report_success_without_executing_a_command(monkeypatch, t
     with pytest.raises(SystemExit, match="no command groups"):
         ci_run.main()
     assert not list(tmp_path.glob("*.json"))
+
+
+def test_ci_home_is_chatfreept_owned(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATFREEPT_CI_HOME", str(tmp_path / "runtime"))
+    assert ci_run.ci_home() == tmp_path / "runtime"
+    monkeypatch.delenv("CHATFREEPT_CI_HOME")
+    assert ci_run.ci_home() == Path.home() / ".local" / "share" / "chatfreept-ci" / "v1"
+
+
+def test_bootstrap_and_runner_use_same_home_configuration():
+    script = (ROOT / "scripts" / "bootstrap").read_text(encoding="utf-8")
+    assert 'CHATFREEPT_CI_HOME' in script
+    assert "chatfreept-ci/v1" in script
+    assert "CLAUDE_CI_HOME" not in script

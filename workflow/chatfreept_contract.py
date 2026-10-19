@@ -195,7 +195,8 @@ def validate_repository(root: Path = ROOT) -> list[str]:
 
     try:
         project = read_json(root / ".chatfreept" / "project.json")
-        legacy = read_json(root / ".claude-workflow.json")
+        legacy = read_json(root / ".chatfreept" / "github.json")
+        stages = read_json(root / ".chatfreept" / "ci.json")
     except (OSError, UnicodeError, ValueError) as exc:
         return [f"ChatGPT project metadata could not be read: {exc}"]
     workflow_texts: dict[str, str] = {}
@@ -205,7 +206,13 @@ def validate_repository(root: Path = ROOT) -> list[str]:
                 workflow_texts[path] = (root / path).read_text(encoding="utf-8")
             except (OSError, UnicodeError):
                 pass
-    return check_project(project, legacy, workflow_texts)
+    failures = check_project(project, legacy, workflow_texts)
+    if not isinstance(legacy, dict) or not isinstance(stages, dict):
+        return ["ChatGPT policy and CI stages must be JSON objects"]
+    for key in ("commands", "stages"):
+        if legacy.get(key) != stages.get(key):
+            failures.append(f"ChatGPT policy {key} differs from headless CI stages")
+    return failures
 
 
 def main() -> int:
