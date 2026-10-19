@@ -70,7 +70,7 @@ def test_possible_infrastructure_failure_is_not_automatically_retried(observatio
 
 
 def test_log_secrets_and_ansi_are_redacted(observation):
-    secret = "ghp_" + "x" * 24
+    secret = "ghp_" + "x" * 24  # pragma: allowlist secret
     keyword = "tok" + "en="
     observation["logs"]["24"] = f"\x1b[31mERROR {keyword}{secret}\x1b[0m"
     content = diag.diagnose(observation)["log_excerpt"]
