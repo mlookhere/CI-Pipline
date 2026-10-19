@@ -51,7 +51,10 @@ def read_handoff(body: str) -> dict[str, Any] | None:
         raise Conflict(f"handoff JSON is invalid: {exc}") from exc
     state = mapping(value, "handoff")
     require(state.get("version") == 1 and positive(state.get("revision")), "invalid handoff version")
-    require(isinstance(state.get("head_sha"), str) and SHA.fullmatch(state["head_sha"]), "bad saved SHA")
+    require(
+        isinstance(state.get("head_sha"), str) and SHA.fullmatch(state["head_sha"]) is not None,
+        "bad saved SHA",
+    )
     require(positive(state.get("issue")) and isinstance(state.get("repository"), str), "bad saved identity")
     lease = mapping(state.get("lease"), "saved lease")
     require(isinstance(lease.get("holder"), str), "saved lease holder missing")
