@@ -336,9 +336,7 @@ def test_native_workflow_gate_bypass_is_rejected(command):
 
 def test_native_policy_accepts_descriptions_without_running_commands():
     source = (
-        "# run: git push --force origin dev\n"
-        "jobs:\n  safety:\n    steps:\n"
-        "      - run: gh pr checks 112\n"
+        "# run: git push --force origin dev\njobs:\n  safety:\n    steps:\n      - run: gh pr checks 112\n"
     )
     assert check_no_gate_bypass_text(source, "ci.yml") == []
 
