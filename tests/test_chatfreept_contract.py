@@ -146,3 +146,14 @@ def test_shared_shell_resolves_the_same_chatfreept_ci_runtime():
     assert "CHATFREEPT_CI_PYTHON" in script
     assert "chatfreept-ci/v1" in script
     assert "CLAUDE_CI_HOME" not in script
+
+
+def test_ci_stage_configuration_does_not_require_legacy_file(tmp_path):
+    import shutil
+    import chatfreept_stages as stages
+
+    folder = tmp_path / ".chatfreept"
+    folder.mkdir()
+    for name in ("ci.json", "github.json"):
+        shutil.copyfile(ROOT / ".chatfreept" / name, folder / name)
+    assert stages.read_config(tmp_path)["version"] == 1

@@ -23,16 +23,16 @@ spec.loader.exec_module(ci_run)
 @pytest.fixture
 def inputs():
     modern = json.loads((ROOT / neutral.CONFIG_PATH).read_text(encoding="utf-8"))
-    legacy = json.loads((ROOT / neutral.LEGACY_PATH).read_text(encoding="utf-8"))
-    return modern, legacy
+    policy = json.loads((ROOT / neutral.POLICY_PATH).read_text(encoding="utf-8"))
+    return modern, policy
 
 
 def test_committed_stage_manifest_has_parity_and_real_commands(inputs):
-    modern, legacy = inputs
-    assert neutral.validate_config(modern, legacy) == []
+    modern, policy = inputs
+    assert neutral.validate_config(modern, policy) == []
     assert neutral.read_config(ROOT) == modern
     for stage in neutral.STAGES:
-        assert ci_run.stage_commands(stage, modern) == ci_run.stage_commands(stage, legacy)
+        assert ci_run.stage_commands(stage, modern) == ci_run.stage_commands(stage, policy)
 
 
 @pytest.mark.parametrize(
@@ -45,21 +45,21 @@ def test_committed_stage_manifest_has_parity_and_real_commands(inputs):
     ],
 )
 def test_missing_core_configuration_fails(inputs, field, bad, message):
-    modern, legacy = copy.deepcopy(inputs)
+    modern, policy = copy.deepcopy(inputs)
     modern[field] = bad
-    assert any(message in error for error in neutral.validate_config(modern, legacy))
+    assert any(message in error for error in neutral.validate_config(modern, policy))
 
 
 def test_unknown_top_level_key_rejected(inputs):
-    modern, legacy = copy.deepcopy(inputs)
-    modern["claude_hook"] = "ignored"
-    assert any("unsupported keys" in error for error in neutral.validate_config(modern, legacy))
+    modern, policy = copy.deepcopy(inputs)
+    modern["unsupported_hook"] = "ignored"
+    assert any("unsupported keys" in error for error in neutral.validate_config(modern, policy))
 
 
 def test_undefined_stage_rejected(inputs):
-    modern, legacy = copy.deepcopy(inputs)
+    modern, policy = copy.deepcopy(inputs)
     modern["stages"]["skipper"] = ["unit"]
-    assert any("unsupported stage names" in error for error in neutral.validate_config(modern, legacy))
+    assert any("unsupported stage names" in error for error in neutral.validate_config(modern, policy))
 
 
 @pytest.mark.parametrize(
@@ -75,21 +75,21 @@ def test_undefined_stage_rejected(inputs):
     ],
 )
 def test_empty_and_placeholder_commands_are_rejected(inputs, command):
-    modern, legacy = copy.deepcopy(inputs)
+    modern, policy = copy.deepcopy(inputs)
     modern["commands"]["unit"] = [command]
-    assert any("placeholder" in error for error in neutral.validate_config(modern, legacy))
+    assert any("placeholder" in error for error in neutral.validate_config(modern, policy))
 
 
 def test_group_with_no_caller_cannot_be_used_to_hide_missing_stage(inputs):
-    modern, legacy = copy.deepcopy(inputs)
+    modern, policy = copy.deepcopy(inputs)
     modern["stages"]["pr"] = ["unit", "invented"]
-    assert any("unknown group" in error for error in neutral.validate_config(modern, legacy))
+    assert any("unknown group" in error for error in neutral.validate_config(modern, policy))
 
 
-def test_legacy_divergence_fails_before_running_commands(inputs):
-    modern, legacy = copy.deepcopy(inputs)
-    legacy["commands"]["unit"] = ["exit 0"]
-    assert any("differs from legacy CI" in error for error in neutral.validate_config(modern, legacy))
+def test_policy_divergence_fails_before_running_commands(inputs):
+    modern, policy = copy.deepcopy(inputs)
+    policy["commands"]["unit"] = ["exit 0"]
+    assert any("differs from policy CI" in error for error in neutral.validate_config(modern, policy))
 
 
 def test_bad_json_causes_error_not_success(tmp_path):
