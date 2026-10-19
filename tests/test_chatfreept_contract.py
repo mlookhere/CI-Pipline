@@ -138,3 +138,11 @@ def test_policy_carries_required_repository_configuration():
     assert policy["commands"] == stages["commands"]
     assert policy["stages"] == stages["stages"]
     assert "project" in policy
+
+
+def test_shared_shell_resolves_the_same_chatfreept_ci_runtime():
+    script = (ROOT / "scripts" / "lib" / "python.sh").read_text(encoding="utf-8")
+    assert "CHATFREEPT_CI_HOME" in script
+    assert "CHATFREEPT_CI_PYTHON" in script
+    assert "chatfreept-ci/v1" in script
+    assert "CLAUDE_CI_HOME" not in script

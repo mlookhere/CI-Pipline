@@ -44,12 +44,12 @@ def test_the_probe_does_not_hand_the_child_process_the_ambient_environment(monke
 
 
 def test_an_explicit_override_is_preferred(monkeypatch):
-    monkeypatch.setenv("CLAUDE_BASH", "/opt/chosen/bash")
+    monkeypatch.setenv("CHATFREEPT_BASH", "/opt/chosen/bash")
     assert bash_tools.bash_candidates()[0] == "/opt/chosen/bash"
 
 
 def test_candidates_are_unique_and_non_empty(monkeypatch):
-    monkeypatch.delenv("CLAUDE_BASH", raising=False)
+    monkeypatch.delenv("CHATFREEPT_BASH", raising=False)
     candidates = bash_tools.bash_candidates()
     assert candidates, "at least the bash on PATH should be offered"
     assert len(candidates) == len(set(candidates))
