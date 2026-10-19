@@ -63,7 +63,6 @@ NON_CAPTURING_TARGETS = {"DEVNULL", "STDOUT"}
 # The control plane's own entry points. These ship with it and are required wherever it is
 # adopted.
 CONTROL_PLANE_EXECUTABLES = (
-    "flow",
     "ci/run",
     "scripts/bootstrap",
     "scripts/setup-github",

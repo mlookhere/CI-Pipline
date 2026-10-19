@@ -66,3 +66,8 @@ def test_legacy_agent_invoker_is_not_an_approved_entry_point():
     assert "scripts/claude-lease" not in CONTROL_PLANE_EXECUTABLES
     assert "scripts/bootstrap" in CONTROL_PLANE_EXECUTABLES
     assert "ci/run" in CONTROL_PLANE_EXECUTABLES
+
+
+def test_root_agent_launcher_is_absent():
+    assert not (ROOT / "flow").exists()
+    assert "flow" in audit.LEGACY_PATHS

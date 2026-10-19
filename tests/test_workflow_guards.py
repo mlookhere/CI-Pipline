@@ -533,9 +533,12 @@ def test_the_control_plane_executables_do_not_include_the_consumers():
     )
 
 
-def test_flow_init_has_the_file_it_reads():
-    """`flow init` is the first command an adopter runs, and it raised FileNotFoundError."""
-    assert (self_test.ROOT / ".gitignore.claude-ci").is_file()
+def test_native_ci_entrypoints_are_present_without_a_local_agent_cli():
+    """ChatGPT uses GitHub MCP; local entry points are deterministic checks only."""
+    assert "flow" not in self_test.CONTROL_PLANE_EXECUTABLES
+    assert "ci/run" in self_test.CONTROL_PLANE_EXECUTABLES
+    assert (self_test.ROOT / ".chatfreept" / "ci.json").is_file()
+    assert not (self_test.ROOT / "flow").exists()
 
 
 def test_the_token_control_block_its_readers_expect_is_declared():
