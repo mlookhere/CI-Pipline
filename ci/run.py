@@ -122,15 +122,21 @@ def stage_commands(stage: str, config: dict[str, Any]) -> list[tuple[str, str]]:
     if stage not in stage_map:
         available = sorted(set(stage_map) | {"quality", "quality-staged", "list"})
         raise SystemExit(f"unknown stage {stage!r}; choose one of: {', '.join(available)}")
+    groups = stage_map[stage]
+    if not isinstance(groups, list) or not groups:
+        raise SystemExit(f"stage {stage!r} has no command groups")
     result: list[tuple[str, str]] = []
     command_groups = config.get("commands", {})
-    for group in stage_map[stage]:
+    for group in groups:
         if group == "quality":
             result.append((group, "__QUALITY__"))
             continue
-        for command in command_groups.get(group, []):
-            if command.strip():
-                result.append((group, command))
+        commands = command_groups.get(group)
+        if not isinstance(commands, list) or not commands or any(
+            not isinstance(command, str) or not command.strip() for command in commands
+        ):
+            raise SystemExit(f"stage {stage!r} has empty or missing command group {group!r}")
+        result.extend((group, command) for command in commands)
     return result
 
 
@@ -157,7 +163,7 @@ def main() -> int:
     else:
         commands = stage_commands(args.stage, config)
         if not commands:
-            print(f"SKIP: no commands configured for stage {args.stage!r}")
+            raise SystemExit(f"stage {args.stage!r} has no commands")
         for group, command in commands:
             # Resolved per command rather than once per stage. bootstrap_ci
             # creates .venv in its first command, so PROJECT_PYTHON is unknown
