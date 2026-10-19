@@ -39,11 +39,17 @@ def protected_names(protection: dict[str, Any]) -> list[str]:
     checks = rule.get("checks", [])
     if not isinstance(contexts, list) or not isinstance(checks, list):
         raise ValueError("branch protection required contexts/checks are missing")
-    names = contexts + [record(check, "required check").get("context") for check in checks]
-    if not names or any(not isinstance(name, str) or not name.strip() for name in names):
-        raise ValueError("branch protection declares zero or malformed required checks")
-    if len(set(names)) != len(names):
-        raise ValueError("duplicate required check names in branch protection")
+    check_names = [record(check, "required check").get("context") for check in checks]
+    for names in (contexts, check_names):
+        if any(not isinstance(name, str) or not name.strip() for name in names):
+            raise ValueError("branch protection declares malformed required checks")
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate required check names in branch protection")
+    if contexts and check_names and set(contexts) != set(check_names):
+        raise ValueError("inconsistent required check contexts and app-bound checks")
+    names = check_names or contexts
+    if not names:
+        raise ValueError("branch protection declares zero required checks")
     return names
 
 

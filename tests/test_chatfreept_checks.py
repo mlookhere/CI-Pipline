@@ -174,3 +174,20 @@ def test_copying_earlier_success_does_not_pass_a_new_head():
     facts["observed_head_sha"] = OLD
     facts["event_head_sha"] = OLD
     assert checks.reconcile(facts, PROJECT)["mergeable"] is False
+
+
+def test_contexts_and_app_bound_checks_from_same_protection_are_equivalent():
+    facts = evidence()
+    names = PROJECT["required_checks"]["integration"]
+    facts["protection"]["required_status_checks"]["checks"] = [
+        {"context": name, "app_id": 15368} for name in names
+    ]
+    assert checks.reconcile(facts, PROJECT)["mergeable"] is True
+
+
+def test_disagreeing_context_and_app_bound_requirements_are_rejected():
+    facts = evidence()
+    facts["protection"]["required_status_checks"]["checks"] = [
+        {"context": "Unrelated check", "app_id": -1}
+    ]
+    assert checks.reconcile(facts, PROJECT)["mergeable"] is False
