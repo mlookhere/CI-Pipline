@@ -12,6 +12,7 @@ fi
 # `python3` that is really the Microsoft Store stub is rejected instead of aborting
 # this script at the first command it runs.
 SYSTEM_PYTHON="$(resolve_system_python)"
+"$SYSTEM_PYTHON" "$ROOT/workflow/chatfreept_contract.py"
 
 CI_HOME="${CLAUDE_CI_HOME:-$HOME/.local/share/claude-code-ci/v2}"
 CI_VENV="$CI_HOME/venv"

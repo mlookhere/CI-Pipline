@@ -2,7 +2,7 @@
   "version": 1,
   "name": "Chat FreePT CI Pipeline",
   "repository": "mlookhere/CI-Pipline",
-  "status": "planning",
+  "status": "developing",
   "agent": {
     "provider": "chatgpt",
     "tool": "github-mcp",
@@ -72,7 +72,7 @@
     {
       "number": 1,
       "issue": 96,
-      "status": "ready"
+      "status": "active"
     },
     {
       "number": 2,

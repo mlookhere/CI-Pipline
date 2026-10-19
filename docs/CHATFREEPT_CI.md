@@ -33,3 +33,7 @@ Project metadata is in `../.chatfreept/project.json`. In a future slice, structu
 ## Stable marker
 
 Continue, Needs input, Plan ready, Testing, Complete and Error are **reporting statuses** only; a status string does not trigger a GitHub transition or grant permissions. All completed changes live in Issues, PRs, commits and Actions.
+
+## Executable contract validation (slice #96)
+
+`workflow/chatfreept_contract.py` is a standard-library-only, headless validator for the versioned `.chatfreept/project.json`. Both `./scripts/bootstrap --ci` and the existing fast self-test invoke it. It rejects missing or invalid metadata, branch drift, missing required named jobs, nonfunctional command groups, and unsupported agent settings. It compares checked-in workflow jobs and legacy configuration; **GitHub API branch-protection settings and real Actions conclusions still require live inspection before merge**. The legacy CI configuration remains authoritative for command execution until slice #2.
