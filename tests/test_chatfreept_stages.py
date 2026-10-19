@@ -62,7 +62,7 @@ def test_undefined_stage_rejected(inputs):
     assert any("unsupported stage names" in error for error in neutral.validate_config(modern, legacy))
 
 
-@pytest.mark.parametrize("command", ["", " ", "true", ":", "# silently skip", "TODO", "CHANGE_ME"])
+@pytest.mark.parametrize("command", ["", " ", "true", ":", "# silently skip", "TODO", "CHANGE_ME"]  #97)
 def test_empty_and_placeholder_commands_are_rejected(inputs, command):
     modern, legacy = copy.deepcopy(inputs)
     modern["commands"]["unit"] = [command]
@@ -84,6 +84,6 @@ def test_legacy_divergence_fails_before_running_commands(inputs):
 def test_bad_json_causes_error_not_success(tmp_path):
     target = tmp_path / ".chatfreept"
     target.mkdir()
-    (target / "ci.json").write_text("{}", encoding="utf-8")
+    (target / "ci.json").write_text("{invalid", encoding="utf-8")
     with pytest.raises(ValueError, match="unreadable"):
         neutral.read_config(tmp_path)
