@@ -28,7 +28,8 @@
       "Risk",
       "Remaining work"
     ],
-    "max_failed_fixes_per_cause": 3
+    "max_failed_fixes_per_cause": 3,
+    "lease_ttl_seconds": 1800
   },
   "commands": {
     "bootstrap": "./scripts/bootstrap --ci",
@@ -77,12 +78,12 @@
     {
       "number": 2,
       "issue": 97,
-      "status": "active"
+      "status": "complete"
     },
     {
       "number": 3,
       "issue": 98,
-      "status": "ready"
+      "status": "active"
     },
     {
       "number": 4,
