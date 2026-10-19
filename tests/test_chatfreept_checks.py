@@ -187,7 +187,5 @@ def test_contexts_and_app_bound_checks_from_same_protection_are_equivalent():
 
 def test_disagreeing_context_and_app_bound_requirements_are_rejected():
     facts = evidence()
-    facts["protection"]["required_status_checks"]["checks"] = [
-        {"context": "Unrelated check", "app_id": -1}
-    ]
+    facts["protection"]["required_status_checks"]["checks"] = [{"context": "Unrelated check", "app_id": -1}]
     assert checks.reconcile(facts, PROJECT)["mergeable"] is False
