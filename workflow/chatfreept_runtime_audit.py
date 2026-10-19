@@ -30,7 +30,7 @@ LEGACY_PATHS = (
     "workflow/sanitize_claude_input.py",
 )
 RUNTIME_DIRS = ("ci", "scripts", "workflow", ".github/workflows")
-ACTION = re.compile(r"(?im)^\s*uses\s*:\s*anthropics\s*/\s*claude", re.I)
+ACTION = re.compile(r"(?im)^\s*(?:-\s*)?uses\s*:\s*anthropics\s*/\s*claude", re.I)
 EXECUTION = re.compile(
     r"""(?im)^\s*(?:run\s*:\s*|exec\s+|os\.execvp\s*\(|subprocess\.(?:run|Popen)\s*\()"""
     r""".*(?:["']claude["']|\bclaude\s+(?:--|\S+)|ANTHROPIC_API_KEY)"""
