@@ -70,7 +70,9 @@ def test_control_block_handles_unicode_and_literal_backslashes():
 
 
 def test_a_missing_control_block_preserves_owner_notes():
-    result = control.replace_control_block("Owner notes \u2014 keep\n", control.CONTROL_START + "new" + control.CONTROL_END)
+    result = control.replace_control_block(
+        "Owner notes \u2014 keep\n", control.CONTROL_START + "new" + control.CONTROL_END
+    )
     assert "Owner notes \u2014 keep" in result
     assert "Previous control notes" in result
 
