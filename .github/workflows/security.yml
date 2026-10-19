@@ -53,7 +53,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate the Claude workflow control plane
+      - name: Validate the ChatGPT-native workflow control plane
         run: python3 workflow/self_test.py --ci
       - name: Reject dangerous workflow patterns
         run: |

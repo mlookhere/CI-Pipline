@@ -40,7 +40,7 @@ Continue, Needs input, Plan ready, Testing, Complete and Error are **reporting s
 
 ## Runtime-neutral command stages (slice #97)
 
-The execution source of truth is now `.chatfreept/ci.json` (schema version 1). `./ci/run <stage>` and `ci/quality.py` read it directly. `workflow/chatfreept_stages.py` rejects unknown schema keys and stage names, missing/blank/placeholder command groups, duplicate stage groups, and any drift from existing `.claude-workflow.json` while older tools are still being migrated. **Both configs must match until the legacy tools are replaced in slice #7.** This is intentionally fail-closed rather than a fallback to the old configuration. No job name, test threshold or command was changed in this migration.
+The execution source of truth is now `.chatfreept/ci.json` (schema version 1). `./ci/run <stage>` and `ci/quality.py` read it directly. `workflow/chatfreept_stages.py` rejects unknown schema keys and stage names, missing/blank/placeholder command groups, duplicate stage groups, and drift from the ChatGPT GitHub policy manifest. The legacy source was retired in slice #7. This remains fail-closed and never accepts a missing command or skipped stage. No job name, test threshold or command was changed in this migration.
 
 ## Runtime and GitHub policy cutover (slice #102 in progress)
 
