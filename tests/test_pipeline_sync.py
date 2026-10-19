@@ -28,7 +28,9 @@ def fixture(root: Path, *, marker: bool = False) -> Path:
     (root / ".gitignore").write_text("node_modules/\ncache/\n", encoding="utf-8")
     (root / "project.json").write_text('{"project": "consumer"}\n', encoding="utf-8")
     if marker:
-        (root / "workflow" / "helper.py").write_text("# pipeline-sync: intentional\nown()\n", encoding="utf-8")
+        (root / "workflow" / "helper.py").write_text(
+            "# pipeline-sync: intentional\nown()\n", encoding="utf-8"
+        )
     return root
 
 

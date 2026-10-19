@@ -124,7 +124,8 @@ def merge_ignore(upstream: Path, consumer: Path, *, write: bool) -> bool:
     if target.is_symlink():
         raise ValueError("consumer .gitignore must not be a symlink")
     additions = [
-        line for line in source.read_text(encoding="utf-8").splitlines()
+        line
+        for line in source.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
     existing = target.read_text(encoding="utf-8").splitlines() if target.is_file() else []
@@ -149,14 +150,14 @@ def install_files(upstream: Path, consumer: Path, state: dict[str, Any]) -> int:
             shutil.copy2(src, target)
         merge_ignore(upstream, consumer, write=True)
         tracked = {
-            name: sha for name, sha in state["upstream"].items()
+            name: sha
+            for name, sha in state["upstream"].items()
             if statuses[name] not in ("intentional", "conflict")
         }
         lock = consumer / LOCK
         lock.parent.mkdir(parents=True, exist_ok=True)
         lock.write_text(
-            json.dumps({"version": 1, "upstream": "mlookhere/CI-Pipline", "files": tracked}, indent=2)
-            + "\n",
+            json.dumps({"version": 1, "upstream": "mlookhere/CI-Pipline", "files": tracked}, indent=2) + "\n",
             encoding="utf-8",
         )
     except (OSError, UnicodeError, ValueError) as exc:
