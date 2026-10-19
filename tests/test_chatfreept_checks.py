@@ -22,11 +22,25 @@ def evidence(kind: str = "integration", event: str = "pull_request") -> dict:
     branch = PROJECT["branches"][kind]
     names = PROJECT["required_checks"][kind]
     runs = [
-        {"id": i + 1, "name": name, "head_sha": HEAD, "event": event, "status": "completed", "conclusion": "success"}
+        {
+            "id": i + 1,
+            "name": name,
+            "head_sha": HEAD,
+            "event": event,
+            "status": "completed",
+            "conclusion": "success",
+        }
         for i, name in enumerate(names)
     ]
     jobs = [
-        {"id": i + 10, "name": name, "head_sha": HEAD, "run_id": i + 1, "status": "completed", "conclusion": "success"}
+        {
+            "id": i + 10,
+            "name": name,
+            "head_sha": HEAD,
+            "run_id": i + 1,
+            "status": "completed",
+            "conclusion": "success",
+        }
         for i, name in enumerate(names)
     ]
     return {
@@ -129,7 +143,13 @@ def test_live_protection_must_match_project(mutation):
 def test_skipped_optional_security_job_is_neutral_only_when_explicitly_optional():
     facts = evidence()
     facts["jobs"]["jobs"].append(
-        {"name": "Dependency review", "run_id": 1, "head_sha": HEAD, "status": "completed", "conclusion": "skipped"}
+        {
+            "name": "Dependency review",
+            "run_id": 1,
+            "head_sha": HEAD,
+            "status": "completed",
+            "conclusion": "skipped",
+        }
     )
     facts["jobs"]["total_count"] += 1
     assert checks.reconcile(facts, PROJECT)["mergeable"] is True
