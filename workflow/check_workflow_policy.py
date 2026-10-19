@@ -168,7 +168,9 @@ EXTERNAL_AGENT = re.compile(
 
 def check_no_external_agent_text(text: str, rel: str) -> list[str]:
     """No secondary AI agent, API key or review trigger may enter workflow execution."""
-    return [f"{rel}: secondary autonomous agent dependency is forbidden"] if EXTERNAL_AGENT.search(text) else []
+    return (
+        [f"{rel}: secondary autonomous agent dependency is forbidden"] if EXTERNAL_AGENT.search(text) else []
+    )
 
 
 def check_privileged_inline_script_text(text: str, rel: str) -> list[str]:

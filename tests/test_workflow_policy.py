@@ -251,6 +251,7 @@ def test_the_real_sync_control_workflow_satisfies_the_rule():
 # Its prior write-permission/publisher boundary is now replaced by a stricter
 # prohibition: no secondary agent execution, credentials, or review trigger.
 
+
 @pytest.mark.parametrize(
     "snippet",
     [
@@ -277,8 +278,7 @@ def test_retired_agent_workflow_is_absent():
     [
         "jobs:\n  publish:\n    permissions:\n      pull-requests: write\n"
         "    steps:\n      - run: python3 - <<'PY'\n",
-        "jobs:\n  publish:\n    permissions:\n      pull-requests: write\n"
-        "    steps:\n      - run: node -\n",
+        "jobs:\n  publish:\n    permissions:\n      pull-requests: write\n    steps:\n      - run: node -\n",
     ],
 )
 def test_write_scoped_jobs_cannot_hide_unchecked_inline_code(source):
@@ -287,8 +287,7 @@ def test_write_scoped_jobs_cannot_hide_unchecked_inline_code(source):
 
 def test_read_only_jobs_are_not_false_positives():
     source = (
-        "jobs:\n  scan:\n    permissions:\n      contents: read\n"
-        "    steps:\n      - run: python3 - <<'PY'\n"
+        "jobs:\n  scan:\n    permissions:\n      contents: read\n    steps:\n      - run: python3 - <<'PY'\n"
     )
     assert check_privileged_inline_script_text(source, "ci.yml") == []
 
