@@ -47,7 +47,7 @@ def run(root: Path, *args: str, env: dict[str, str] | None = None, cwd: Path | N
     environment = {**os.environ, "CLAUDE_PROJECT_DIR": str(root)}
     # The probe accepts a candidate only by executing it, so hand it this very interpreter
     # rather than depending on whatever `python` means on the machine running the tests.
-    environment["CLAUDE_CI_PYTHON"] = sys.executable
+    environment["CHATFREEPT_CI_PYTHON"] = sys.executable
     environment.update(env or {})
     return subprocess.run(
         [str(BASH), str(root / ".claude" / "hooks" / "run"), *args],
@@ -78,7 +78,7 @@ def test_stdin_reaches_the_hook(tmp_path):
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env={**os.environ, "CLAUDE_PROJECT_DIR": str(root), "CLAUDE_CI_PYTHON": sys.executable},
+        env={**os.environ, "CLAUDE_PROJECT_DIR": str(root), "CHATFREEPT_CI_PYTHON": sys.executable},
         cwd=str(root),
     )
     assert '"PreToolUse"' in done.stdout, done.stderr
@@ -179,7 +179,7 @@ def test_an_unset_project_dir_is_reported(tmp_path):
 def test_a_missing_resolver_is_reported_rather_than_aborting_bare(tmp_path):
     """`set -e` on a missing source aborts with bash's own message and nothing else."""
     root = build(tmp_path, resolver=False)
-    done = run(root, "hook.py", env={"CLAUDE_CI_PYTHON": ""})
+    done = run(root, "hook.py", env={"CHATFREEPT_CI_PYTHON": ""})
     assert done.returncode != 0
     assert "python.sh is missing" in done.stderr
     assert "NOT enforcing" in done.stderr
@@ -192,9 +192,9 @@ def test_an_unresolvable_interpreter_is_reported_and_does_not_poison_the_cache(t
         "hook.py",
         env={
             "PATH": str(tmp_path),
-            "CLAUDE_CI_PYTHON": "",
+            "CHATFREEPT_CI_PYTHON": "",
             "PYTHON_BIN": "",
-            "CLAUDE_CI_HOME": str(tmp_path / "nope"),
+            "CHATFREEPT_CI_HOME": str(tmp_path / "nope"),
         },
     )
     assert done.returncode != 0
@@ -218,6 +218,6 @@ def test_an_unresolvable_interpreter_is_reported_and_does_not_poison_the_cache(t
 )
 def test_the_failure_exit_code_suits_the_event(tmp_path, hook, expected):
     root = build(tmp_path, resolver=False)
-    done = run(root, f"/some/where/.claude/hooks/{hook}", env={"CLAUDE_CI_PYTHON": ""})
+    done = run(root, f"/some/where/.claude/hooks/{hook}", env={"CHATFREEPT_CI_PYTHON": ""})
     assert done.returncode == expected, done.stderr
     assert "NOT enforcing" in done.stderr
