@@ -88,12 +88,12 @@
     {
       "number": 4,
       "issue": 99,
-      "status": "active"
+      "status": "complete"
     },
     {
       "number": 5,
       "issue": 100,
-      "status": "ready"
+      "status": "active"
     },
     {
       "number": 6,
