@@ -68,7 +68,6 @@ CONTROL_PLANE_EXECUTABLES = (
     "scripts/bootstrap",
     "scripts/setup-github",
     "scripts/claude-lease",
-    "scripts/claude-exec",
     "scripts/validate-workflow",
 )
 
