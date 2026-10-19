@@ -124,7 +124,7 @@ def test_ci_home_is_chatfreept_owned(monkeypatch, tmp_path):
 
 def test_bootstrap_and_runner_use_same_home_configuration():
     script = (ROOT / "scripts" / "bootstrap").read_text(encoding="utf-8")
-    assert 'CHATFREEPT_CI_HOME' in script
+    assert "CHATFREEPT_CI_HOME" in script
     assert "chatfreept-ci/v1" in script
     assert "CLAUDE_CI_HOME" not in script
 
