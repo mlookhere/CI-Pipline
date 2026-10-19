@@ -116,7 +116,9 @@ def diagnose(observed: Any) -> dict[str, Any]:
         run = obj(data["run"], "run")
         failure = first_failure(jobs)
         if failure is None:
-            pending = run.get("status") != "completed" or any(job.get("status") != "completed" for job in jobs)
+            pending = run.get("status") != "completed" or any(
+                job.get("status") != "completed" for job in jobs
+            )
             status = "pending" if pending else "no-causal-failure"
             return {"status": status, "ci_verified": False, "head_sha": data["head_sha"]}
         job, step = failure
