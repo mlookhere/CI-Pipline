@@ -113,9 +113,7 @@ def validate_observation(observation: dict[str, Any]) -> tuple[dict[str, Any], d
     return issue, branch, sha
 
 
-def check_preconditions(
-    saved: dict[str, Any] | None, request: dict[str, Any], sha: str, now: int
-) -> int:
+def check_preconditions(saved: dict[str, Any] | None, request: dict[str, Any], sha: str, now: int) -> int:
     require(request.get("expected_head_sha") == sha, "stale branch head; re-read GitHub")
     revision = saved["revision"] if saved else 0
     require(request.get("expected_revision") == revision, "stale Issue handoff revision")
@@ -130,9 +128,7 @@ def check_preconditions(
     return revision
 
 
-def verify_saved_identity(
-    saved: dict[str, Any] | None, repository: str, issue: int, branch: str
-) -> None:
+def verify_saved_identity(saved: dict[str, Any] | None, repository: str, issue: int, branch: str) -> None:
     if saved is None:
         return
     require(saved["repository"] == repository, "saved handoff belongs to another repository")
