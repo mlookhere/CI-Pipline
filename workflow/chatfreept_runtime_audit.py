@@ -53,7 +53,7 @@ def runtime_sources(root: Path) -> Iterable[tuple[str, Path]]:
 
 
 def forbidden_text(name: str, text: str) -> list[str]:
-    patterns = (ACTION, EXECUTION, CONFIGURATION)
+    patterns: tuple[re.Pattern[str], ...] = (ACTION, EXECUTION, CONFIGURATION)
     if name.startswith("scripts/") or name.startswith("ci/"):
         patterns = (*patterns, SHELL_RUNTIME)
     return [f"{name}: forbidden agent runtime reference" for pattern in patterns if pattern.search(text)]
