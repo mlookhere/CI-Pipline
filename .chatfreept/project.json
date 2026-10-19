@@ -72,12 +72,12 @@
     {
       "number": 1,
       "issue": 96,
-      "status": "active"
+      "status": "complete"
     },
     {
       "number": 2,
       "issue": 97,
-      "status": "ready"
+      "status": "active"
     },
     {
       "number": 3,

@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF_PATH = "ci/quality.py"
-CONFIG = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+CONFIG = json.loads((ROOT / ".chatfreept" / "ci.json").read_text(encoding="utf-8"))
 QUALITY = CONFIG.get("quality", {})
 
 SECRET_PATTERNS = {

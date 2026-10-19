@@ -37,3 +37,7 @@ Continue, Needs input, Plan ready, Testing, Complete and Error are **reporting s
 ## Executable contract validation (slice #96)
 
 `workflow/chatfreept_contract.py` is a standard-library-only, headless validator for the versioned `.chatfreept/project.json`. Both `./scripts/bootstrap --ci` and the existing fast self-test invoke it. It rejects missing or invalid metadata, branch drift, missing required named jobs, nonfunctional command groups, and unsupported agent settings. It compares checked-in workflow jobs and legacy configuration; **GitHub API branch-protection settings and real Actions conclusions still require live inspection before merge**. The legacy CI configuration remains authoritative for command execution until slice #2.
+
+## Runtime-neutral command stages (slice #97)
+
+The execution source of truth is now `.chatfreept/ci.json` (schema version 1). `./ci/run <stage>` and `ci/quality.py` read it directly. `workflow/chatfreept_stages.py` rejects unknown schema keys and stage names, missing/blank/placeholder command groups, duplicate stage groups, and any drift from existing `.claude-workflow.json` while older tools are still being migrated. **Both configs must match until the legacy tools are replaced in slice #7.** This is intentionally fail-closed rather than a fallback to the old configuration. No job name, test threshold or command was changed in this migration.

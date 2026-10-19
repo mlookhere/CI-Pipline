@@ -16,6 +16,7 @@ from typing import Any
 
 from bash_tools import bash_command
 from chatfreept_contract import validate_repository
+from chatfreept_stages import validate_repository as validate_stage_repository
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_HOOK_EVENTS = {
@@ -670,6 +671,7 @@ def main() -> int:
     failures += check_labels(config)
     failures += check_stage_commands(config)
     failures += validate_repository(ROOT)
+    failures += validate_stage_repository(ROOT)
     failures += check_no_product_names(config)
     warnings += collect_warnings(config)
     failures += check_tracked_artifacts()
