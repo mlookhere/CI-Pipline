@@ -62,7 +62,14 @@ def test_undefined_stage_rejected(inputs):
     assert any("unsupported stage names" in error for error in neutral.validate_config(modern, legacy))
 
 
-@pytest.mark.parametrize("command", ["", " ", "true", ":", "# silently skip", "TODO", "CHANGE_ME"])  #97
+@pytest.mark.parametrize(
+    "command",
+    [
+        "", " ", "true", ":", "# silently skip",
+        pytest.param("TODO", id="#97-placeholder"),
+        "CHANGE_ME",
+    ],
+)
 def test_empty_and_placeholder_commands_are_rejected(inputs, command):
     modern, legacy = copy.deepcopy(inputs)
     modern["commands"]["unit"] = [command]

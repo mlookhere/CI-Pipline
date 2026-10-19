@@ -14,7 +14,7 @@ LEGACY_PATH = ".claude-workflow.json"
 FIELDS = {"version", "commands", "stages", "quality"}
 STAGES = {"fast", "pr", "release", "nightly", "audit", "bootstrap-local", "bootstrap-ci"}
 GROUP_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
-PLACEHOLDER = re.compile(r"^\s*(?:true|:|#.*|TODO(?:\b|:)|CHANGE_ME(?:\b|:))\s*$", re.I)  #97
+PLACEHOLDER = re.compile(r"^\s*(?:true|:|#.*|TODO(?:\b|:)|CHANGE_ME(?:\b|:))\s*$", re.I)  # https://github.com/mlookhere/CI-Pipline/issues/97
 
 
 def nonempty_command(command: Any) -> bool:
@@ -28,8 +28,10 @@ def check_commands(value: Any) -> list[str]:
     for group, commands in value.items():
         if not isinstance(group, str) or not GROUP_NAME.fullmatch(group):
             failures.append(f"ci.json: invalid command-group name {group!r}")
-        if not isinstance(commands, list) or not commands or any(
-            not nonempty_command(command) for command in commands
+        if (
+            not isinstance(commands, list)
+            or not commands
+            or any(not nonempty_command(command) for command in commands)
         ):
             failures.append(f"ci.json: command group {group!r} is empty or contains a placeholder")
     return failures
