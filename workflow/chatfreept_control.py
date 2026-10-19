@@ -309,6 +309,7 @@ def sync_control(config: dict[str, Any] | None = None) -> None:
     write_control_body(control["number"], updated, original=body)
     print(f"Control Issue #{control['number']} synchronized.")
 
+
 def main() -> int:
     use_utf8_streams()
     sync_control()
