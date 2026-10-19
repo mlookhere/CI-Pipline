@@ -161,6 +161,28 @@ def check_closure_concurrency_text(text: str, rel: str) -> list[str]:
     return failures
 
 
+# A checked-in Actions workflow must never bypass the repository's protected gates.
+# Dynamic GitHub MCP operations are governed by GitHub permissions and explicit CI proof.
+BYPASS_COMMAND = re.compile(
+    r"(?i)(?:\bgh\s+pr\s+merge\b[^\n#]*--admin\b"
+    r"|\bgit\s+push\b[^\n#]*(?:--force(?:-with-lease)?|-f\b)"
+    r"|\bgit\s+(?:commit|push)\b[^\n#]*--no-verify\b"
+    r"|\bgit\s+reset\s+--hard\b"
+    r"|\bgh\s+(?:secret|variable)\s+(?:set|delete|remove)\b)"
+)
+
+
+def check_no_gate_bypass_text(text: str, rel: str) -> list[str]:
+    """Reject protected-branch bypasses in executable workflow lines, not YAML comments."""
+    failures = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue
+        if BYPASS_COMMAND.search(line):
+            failures.append(f"{rel}:{number}: protected CI gate bypass command is forbidden")
+    return failures
+
+
 EXTERNAL_AGENT = re.compile(
     r"(?i)(?:anthropics/claude-code-action|ANTHROPIC_API_KEY|claude:review|scripts/claude-exec)"
 )
@@ -222,6 +244,7 @@ def check(path: Path) -> list[str]:
 
     rel = str(path.relative_to(ROOT))
     failures.extend(check_no_external_agent_text(text, rel))
+    failures.extend(check_no_gate_bypass_text(text, rel))
     failures.extend(check_closure_concurrency_text(text, rel))
     failures.extend(check_privileged_inline_script_text(text, rel))
     return failures

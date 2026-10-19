@@ -21,6 +21,7 @@ from check_workflow_policy import (  # noqa: E402
     check_dependabot,
     check_dependabot_text,
     check_no_external_agent_text,
+    check_no_gate_bypass_text,
     check_privileged_inline_script_text,
     concurrency_block,
     group_of,
@@ -311,3 +312,37 @@ def test_the_real_sync_job_still_runs_after_the_closure_job():
     assert set(blocks) == {"close", "sync"}, sorted(blocks)
     assert "needs: close" in blocks["sync"]
     assert "!cancelled()" in blocks["sync"], "sync must still run when close is skipped or fails"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "run: gh pr merge 112 --admin",
+        "run: git push --force origin dev",
+        "run: git push -f origin main",
+        "run: git push --force-with-lease origin dev",
+        "run: git commit --no-verify -m change",
+        "run: git push --no-verify",
+        "run: git reset --hard HEAD~1",
+        "run: gh secret set API_TOKEN",
+        "run: gh variable delete CI",
+    ],
+)
+def test_native_workflow_gate_bypass_is_rejected(command):
+    findings = check_no_gate_bypass_text("jobs:\n  safety:\n    steps:\n      - " + command, "ci.yml")
+    assert len(findings) == 1
+    assert "protected CI gate bypass" in findings[0]
+
+
+def test_native_policy_accepts_descriptions_without_running_commands():
+    source = (
+        "# run: git push --force origin dev\n"
+        "jobs:\n  safety:\n    steps:\n"
+        "      - run: gh pr checks 112\n"
+    )
+    assert check_no_gate_bypass_text(source, "ci.yml") == []
+
+
+def test_committed_workflow_sources_contain_no_gate_bypasses():
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        assert check_no_gate_bypass_text(path.read_text(encoding="utf-8"), path.name) == []
