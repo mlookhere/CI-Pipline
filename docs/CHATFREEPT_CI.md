@@ -45,3 +45,7 @@ The execution source of truth is now `.chatfreept/ci.json` (schema version 1). `
 ## Runtime and GitHub policy cutover (slice #102 in progress)
 
 The headless CI virtual environment is now provisioned under `~/.local/share/chatfreept-ci/v1`, overridable by `CHATFREEPT_CI_HOME`. Both `scripts/bootstrap` and `ci/run.py` resolve that exact location. `.chatfreept/github.json` is the checked-in policy input for the ChatGPT project contract; its stage and command sets must match `.chatfreept/ci.json`. The legacy configuration and hook-era tests remain during a verified transition; this is not yet a claim that the entire repository is Claude-free.
+
+## Deterministic control Issue sync migration (slice #102 ongoing)
+
+`workflow/chatfreept_control.py` now renders the control Issue using GitHub's authenticated CLI in a deterministic Actions job, not an AI coding runner. `sync-control.yml` invokes this module, and `workflow/handle_pr_state.py` now reads the ChatGPT-native GitHub policy. The one-time control-block adapter preserves existing notes while transitioning the prior managed marker to the new `chatfreept-control` marker. Summary statuses from a check rollup are explicitly **not merge authorization**: skipped or unverified checks cannot be counted as required passes. Other legacy functions, hook tests and the optional advisory workflow still exist until the remainder of #102 is migrated; this draft must not merge prematurely.
