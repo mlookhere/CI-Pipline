@@ -54,9 +54,8 @@ def test_deterministic_runtime_actions_remain_allowed(name, content):
     assert audit.forbidden_text(name, content) == []
 
 
-def test_not_claimed_ready_until_legacy_runtime_is_gone():
-    current = audit.verify(ROOT)
-    assert any("legacy runtime path is still present" in finding for finding in current)
+def test_shipped_runtime_is_fully_native():
+    assert audit.verify(ROOT) == []
 
 
 def test_legacy_agent_invoker_is_not_an_approved_entry_point():

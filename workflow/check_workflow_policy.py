@@ -168,7 +168,9 @@ BYPASS_COMMAND = re.compile(
     r"|\bgit\s+push\b[^\n#]*(?:--force(?:-with-lease)?|-f\b)"
     r"|\bgit\s+(?:commit|push)\b[^\n#]*--no-verify\b"
     r"|\bgit\s+reset\s+--hard\b"
-    r"|\bgh\s+(?:secret|variable)\s+(?:set|delete|remove)\b)"
+    r"|\bgh\s+(?:secret|variable)\s+(?:set|delete|remove)\b"
+    r"|\bgit\s+clean\s+-f\b"
+    r"|\bdocker\s+system\s+prune\b)"
 )
 
 

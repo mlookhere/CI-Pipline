@@ -326,6 +326,8 @@ def test_the_real_sync_job_still_runs_after_the_closure_job():
         "run: git reset --hard HEAD~1",
         "run: gh secret set API_TOKEN",
         "run: gh variable delete CI",
+        "run: git clean -f .",
+        "run: docker system prune -f",
     ],
 )
 def test_native_workflow_gate_bypass_is_rejected(command):

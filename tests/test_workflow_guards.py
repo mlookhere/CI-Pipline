@@ -97,143 +97,6 @@ def test_unrelated_run_calls_are_ignored():
     assert self_test.subprocess_reads(ast.parse(source)) == []
 
 
-RUNNER_COMMAND = (
-    'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/run" "$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_policy.py"'
-)
-
-
-@pytest.mark.parametrize(
-    "interpreter",
-    [
-        pytest.param("python3", id="store-stub-on-windows"),
-        # This one used to be *asserted acceptable* here. It is the default on Debian and
-        # Ubuntu without python-is-python3, where it does not exist at all (Issue #38).
-        pytest.param("python", id="absent-on-debian"),
-    ],
-)
-def test_a_hook_command_may_not_name_an_interpreter(interpreter):
-    """A hook that silently fails to start stops enforcing policy without failing anything."""
-    hook = {
-        "command": f'{interpreter} "$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_policy.py"',
-        "timeout": 10,
-    }
-    failures = self_test.check_hook_entry("PreToolUse", hook)
-    assert any("names an interpreter directly" in failure for failure in failures)
-
-
-def test_the_runner_form_is_accepted():
-    assert self_test.check_hook_entry("PreToolUse", {"command": RUNNER_COMMAND, "timeout": 10}) == []
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        pytest.param(
-            '"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_policy.py"',
-            id="nothing-resolves-an-interpreter",
-        ),
-        # A substring test for the runner passes for both of these. The runner is named,
-        # and does not run.
-        pytest.param(
-            "sh -c 'echo skipped' # .claude/hooks/run",
-            id="runner-named-only-in-a-comment",
-        ),
-        pytest.param(
-            f"{RUNNER_COMMAND} || true",
-            id="runner-called-then-chained-past",
-        ),
-        pytest.param(
-            f'{RUNNER_COMMAND} "$CLAUDE_PROJECT_DIR/.claude/hooks/stop_gate.py"',
-            id="extra-argument",
-        ),
-    ],
-)
-def test_a_hook_that_bypasses_the_runner_is_rejected(command):
-    """No interpreter named, but nothing reliably resolving one -- still a silent death."""
-    failures = self_test.check_hook_entry("PreToolUse", {"command": command, "timeout": 10})
-    assert any("not exactly a" in failure for failure in failures), failures
-
-
-def test_the_eleven_hook_timeouts_are_unchanged():
-    """Issue #38 requires the same timeouts, and a timeout is easy to lose in a rewrite."""
-    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    seen = [
-        (event, hook["timeout"])
-        for event, groups in settings["hooks"].items()
-        for group in groups
-        for hook in group["hooks"]
-    ]
-    assert seen == [
-        ("SessionStart", 20),
-        ("UserPromptSubmit", 10),
-        ("PreToolUse", 12),
-        ("PermissionRequest", 10),
-        ("PostToolUse", 15),
-        ("PostToolUseFailure", 15),
-        ("PreCompact", 15),
-        ("PostCompact", 10),
-        ("SubagentStart", 10),
-        ("SubagentStop", 10),
-        ("Stop", 20),
-    ], seen
-
-
-def test_every_referenced_hook_file_is_checked_not_just_the_first():
-    """The command names two files now; checking one leaves the other free to vanish."""
-    hook = {
-        "command": RUNNER_COMMAND.replace("pre_tool_policy.py", "no_such_hook.py"),
-        "timeout": 10,
-    }
-    failures = self_test.check_hook_entry("PreToolUse", hook)
-    assert any("references missing no_such_hook.py" in failure for failure in failures)
-
-
-def test_the_real_settings_file_launches_every_hook_through_the_runner():
-    """The regression this Issue exists for, pinned against the file itself."""
-    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    commands = [
-        hook["command"]
-        for groups in settings["hooks"].values()
-        for group in groups
-        for hook in group["hooks"]
-    ]
-    assert len(commands) == 11, commands
-    assert all(self_test.HOOK_RUNNER in command for command in commands)
-    assert not any(self_test.BARE_PYTHON.search(command) for command in commands)
-
-
-def test_the_real_settings_file_registers_the_policy_hooks_for_every_tool_they_judge():
-    """Issue #59: a hook that is never invoked enforces nothing and reports nothing.
-
-    The matcher in settings.json is a copy of the taxonomy in .claude/hooks/common.py --
-    Claude Code reads that file as data and cannot compute one -- so this comparison is
-    what keeps the copy honest.
-    """
-    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    assert self_test.check_policy_matchers(settings) == []
-    assert "PowerShell" in (self_test.hook_policy_matcher([]) or "")
-
-
-def test_a_matcher_that_drops_a_tool_fails_the_gate():
-    """The matcher this repository shipped until Issue #59, kept as the negative case."""
-    settings = {
-        "hooks": {
-            event: [{"matcher": "Bash|Edit|Write|NotebookEdit|mcp__.*", "hooks": []}]
-            for event in self_test.POLICY_MATCHED_EVENTS
-        }
-    }
-    failures = self_test.check_policy_matchers(settings)
-    assert len(failures) == len(self_test.POLICY_MATCHED_EVENTS), failures
-    assert all("PowerShell" in failure for failure in failures)
-
-
-def test_a_taxonomy_that_cannot_be_read_fails_rather_than_passing_quietly(monkeypatch):
-    """A comparison that could not be made is not a comparison that succeeded."""
-    monkeypatch.setattr(self_test, "HOOK_COMMON", ".claude/hooks/no_such_common.py")
-    failures = self_test.check_policy_matchers({"hooks": {}})
-    assert any("could not be read" in failure for failure in failures), failures
-
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -346,51 +209,6 @@ def test_a_passing_policy_checker_still_reports_nothing(tmp_path, monkeypatch):
     assert self_test.check_workflow_policy() == []
 
 
-DENY_RULES_THE_WRITTEN_POLICY_REQUIRES = [
-    pytest.param("Bash(gh pr merge --admin *)", id="admin-merge"),
-    pytest.param("Bash(git push --force *)", id="force-push"),
-    pytest.param("Bash(git reset --hard *)", id="hard-reset"),
-    pytest.param("Bash(docker system prune *)", id="docker-prune"),
-    pytest.param("Bash(gh secret *)", id="secret-admin"),
-    pytest.param("Bash(gh variable *)", id="variable-admin"),
-]
-
-
-@pytest.mark.parametrize("rule", DENY_RULES_THE_WRITTEN_POLICY_REQUIRES)
-def test_removing_a_required_deny_rule_fails_the_self_test(rule):
-    """`/permissions` deletes these one click at a time and no gate noticed (Issue #90).
-
-    Branch protection returns 403 on this plan, so the admin-merge entry is the only thing
-    standing between a session and a required-checks bypass.
-    """
-    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    assert rule in settings["permissions"]["deny"]
-
-    weakened = json.loads(json.dumps(settings))
-    weakened["permissions"]["deny"] = [entry for entry in weakened["permissions"]["deny"] if entry != rule]
-    failures = self_test.check_deny_rules(weakened)
-    assert failures, f"removing {rule} was not detected"
-    assert rule in failures[0]
-    assert "command-policy.md" in failures[0]
-
-
-def test_the_committed_settings_satisfy_the_written_policy():
-    settings = json.loads((self_test.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    assert self_test.check_deny_rules(settings) == []
-
-
-@pytest.mark.parametrize(
-    "config",
-    [
-        pytest.param({}, id="no-permissions-block"),
-        pytest.param({"permissions": {}}, id="no-deny-list"),
-        pytest.param({"permissions": {"deny": "everything"}}, id="deny-is-not-a-list"),
-    ],
-)
-def test_a_malformed_permissions_block_is_not_read_as_compliant(config):
-    assert self_test.check_deny_rules(config) != []
-
-
 # Issue #92. `ci/run.py` skips an empty command group in silence, so a stage could name a
 # check it never ran and report success. The `release` stage did that seven times.
 
@@ -495,7 +313,7 @@ def test_prose_naming_the_product_is_not_coupling(tmp_path, monkeypatch, source)
 
 
 CONSUMER_FILES = [
-    pytest.param(".claude-workflow.json", id="the-config-itself"),
+    pytest.param(".chatfreept/github.json", id="the-config-itself"),
     pytest.param("ci/mypy-advisory.ini", id="mypy-configuration"),
     pytest.param("ci/requirements-ci.txt", id="ci-requirements"),
     pytest.param("pyproject.toml", id="project-metadata"),
@@ -505,10 +323,9 @@ CONSUMER_FILES = [
 
 @pytest.mark.parametrize("relative", CONSUMER_FILES)
 def test_the_consumers_own_files_may_name_the_product(tmp_path, monkeypatch, relative):
-    """`.claude-workflow.json` is where these values are supposed to live.
+    """`.chatfreept/github.json` is the consumer-owned policy file.
 
-    It also starts with `.claude`, which a bare prefix test matched -- the check reported the
-    configuration file for holding the configuration.
+    Consumer metadata is outside portable runtime directories and must not be mistaken for a vendored source.
     """
     assert _portable(tmp_path, monkeypatch, relative, 'name = "knowledge_nexus"\n') == []
 
@@ -539,17 +356,6 @@ def test_native_ci_entrypoints_are_present_without_a_local_agent_cli():
     assert "ci/run" in self_test.CONTROL_PLANE_EXECUTABLES
     assert (self_test.ROOT / ".chatfreept" / "ci.json").is_file()
     assert not (self_test.ROOT / "flow").exists()
-
-
-def test_the_token_control_block_its_readers_expect_is_declared():
-    """Four modules read `token_control` and the shipped configuration defined none of it."""
-    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
-
-    assert set(config["token_control"]) >= {
-        "capture_noisy_commands",
-        "session_context_max_chars",
-        "large_prompt_chars",
-    }
 
 
 @pytest.mark.parametrize("stage", ["release", "pr", "nightly", "audit"])
@@ -815,7 +621,7 @@ def test_every_module_that_imports_the_stream_fix_calls_it_first():
     offenders = []
     for relative in sorted(self_test.tracked_files()):
         # Entry points only. A test module naming the function is discussing it, not calling it.
-        if not relative.endswith(".py") or not relative.startswith(("workflow/", "ci/", ".claude/")):
+        if not relative.endswith(".py") or not relative.startswith(("workflow/", "ci/")):
             continue
         source = (self_test.ROOT / relative).read_text(encoding="utf-8", errors="replace")
         if "use_utf8_streams" not in source or "def main" not in source:
@@ -876,3 +682,9 @@ def test_setup_github_claims_protection_only_when_it_installed_it():
     assert 'if [[ "$PROTECTION_STATUS" == "failed" ]]; then\n  exit 1' in script, (
         "a refused protection must fail the script, not merely warn"
     )
+
+
+def test_fast_gate_requires_runtime_audit():
+    source = (self_test.ROOT / "workflow" / "self_test.py").read_text(encoding="utf-8")
+    assert "failures += verify_native_runtime(ROOT)" in source
+    assert "failures += check_workflow_policy()" in source
