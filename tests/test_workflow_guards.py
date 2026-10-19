@@ -540,7 +540,7 @@ def test_flow_init_has_the_file_it_reads():
 
 def test_the_token_control_block_its_readers_expect_is_declared():
     """Four modules read `token_control` and the shipped configuration defined none of it."""
-    config = json.loads((self_test.ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
+    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
 
     assert set(config["token_control"]) >= {
         "capture_noisy_commands",

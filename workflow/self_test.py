@@ -634,9 +634,7 @@ def check_entry_point_interpreters() -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Validate the repository-owned ChatGPT CI control plane."
-    )
+    parser = argparse.ArgumentParser(description="Validate the repository-owned ChatGPT CI control plane.")
     parser.add_argument(
         "--ci", action="store_true", help="Treat portability warnings as CI failures where appropriate."
     )
