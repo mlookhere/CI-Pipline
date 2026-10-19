@@ -471,7 +471,7 @@ def test_a_portable_module_naming_the_product_fails(tmp_path, monkeypatch, sourc
     failures = _portable(tmp_path, monkeypatch, "workflow/check_dependencies.py", source)
 
     assert failures, f"coupling was not detected in {source!r}"
-    assert "read it from .claude-workflow.json" in failures[0]
+    assert "read it from .chatfreept/github.json" in failures[0]
 
 
 COMMENTARY_SOURCES = [
@@ -738,7 +738,7 @@ POINTLESS_SYNC_TRIGGERS = ("labeled", "unlabeled", "synchronize")
 def test_the_control_sync_does_not_run_on_events_it_cannot_react_to():
     """A trigger that cannot change the output is a red check bought for nothing.
 
-    `claude_flow.open_issues_and_prs` asks GitHub for a pull request's number, title,
+    `chatfreept_control.open_issues_and_prs` asks GitHub for a pull request's number, title,
     headRefName, baseRefName, url and statusCheckRollup. Not its labels. So labelling a pull
     request cannot alter a single cell of the rendered table, and `synchronize` only ever
     anticipates a check result that the `workflow_run` trigger reports accurately once the
@@ -764,7 +764,7 @@ def test_the_control_renderer_still_does_not_read_pull_request_labels():
     If the renderer ever starts reading a pull request's labels, the trigger list has to grow
     back, and the test above would then be enforcing a stale argument.
     """
-    source = (self_test.ROOT / "workflow" / "claude_flow.py").read_text(encoding="utf-8")
+    source = (self_test.ROOT / "workflow" / "chatfreept_control.py").read_text(encoding="utf-8")
     request = re.search(r"(?s)def open_issues_and_prs.*?pr_by_issue: dict", source)
     assert request, "open_issues_and_prs not found in the expected shape"
     assert "labels" not in request.group(0).split('"pr",')[-1], (

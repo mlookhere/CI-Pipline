@@ -243,7 +243,7 @@ def check_no_product_names(config: dict) -> list[str]:
                 if name in line:
                     failures.append(
                         f"{relative}:{number}: names {name!r}, but this file is part of the "
-                        "portable control plane; read it from .claude-workflow.json instead"
+                        "portable control plane; read it from .chatfreept/github.json instead"
                     )
     return failures
 
