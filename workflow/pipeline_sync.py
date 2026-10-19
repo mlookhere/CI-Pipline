@@ -138,26 +138,8 @@ def merge_ignore(upstream: Path, consumer: Path, *, write: bool) -> bool:
     return bool(missing)
 
 
-def report(upstream: Path, consumer: Path, *, mode: str = "check") -> int:
-    try:
-        state = plan(upstream, consumer)
-        statuses: dict[str, str] = state["changes"]
-        ignore_drift = merge_ignore(upstream, consumer, write=False)
-    except (OSError, ValueError, UnicodeError) as exc:
-        print(f"failure: {exc}")
-        return 2
-    for name, status in statuses.items():
-        if status != "match":
-            print(f"{status}: {name}")
-    if ignore_drift:
-        print("missing: .gitignore requires additive entries")
-    blocked = any(value == "conflict" for value in statuses.values())
-    changed = any(value in ("stale", "missing") for value in statuses.values()) or ignore_drift
-    if mode != "install":
-        return 1 if blocked or changed else 0
-    if blocked:
-        print("failure: consumer-edited owned files cannot be overwritten; mark deliberate divergence")
-        return 1
+def install_files(upstream: Path, consumer: Path, state: dict[str, Any]) -> int:
+    statuses: dict[str, str] = state["changes"]
     try:
         for name, status in statuses.items():
             if status not in ("missing", "stale"):
@@ -182,6 +164,29 @@ def report(upstream: Path, consumer: Path, *, mode: str = "check") -> int:
         return 2
     print(f"installed {sum(value in ('stale', 'missing') for value in statuses.values())} owned file(s)")
     return 0
+
+
+def report(upstream: Path, consumer: Path, *, mode: str = "check") -> int:
+    try:
+        state = plan(upstream, consumer)
+        statuses: dict[str, str] = state["changes"]
+        ignore_drift = merge_ignore(upstream, consumer, write=False)
+    except (OSError, ValueError, UnicodeError) as exc:
+        print(f"failure: {exc}")
+        return 2
+    for name, status in statuses.items():
+        if status != "match":
+            print(f"{status}: {name}")
+    if ignore_drift:
+        print("missing: .gitignore requires additive entries")
+    blocked = any(value == "conflict" for value in statuses.values())
+    changed = any(value in ("stale", "missing") for value in statuses.values()) or ignore_drift
+    if mode != "install":
+        return 1 if blocked or changed else 0
+    if blocked:
+        print("failure: consumer-edited owned files cannot be overwritten; mark deliberate divergence")
+        return 1
+    return install_files(upstream, consumer, state)
 
 
 def revision(root: Path) -> str:
