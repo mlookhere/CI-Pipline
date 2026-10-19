@@ -60,7 +60,9 @@ def forbidden_text(name: str, text: str) -> list[str]:
 
 
 def verify(root: Path = ROOT) -> list[str]:
-    failures = [f"legacy runtime path is still present: {name}" for name in LEGACY_PATHS if (root / name).exists()]
+    failures = [
+        f"legacy runtime path is still present: {name}" for name in LEGACY_PATHS if (root / name).exists()
+    ]
     try:
         vendored = portable_files(root)
     except (OSError, UnicodeError, ValueError) as exc:

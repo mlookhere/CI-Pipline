@@ -31,7 +31,7 @@ def test_legacy_runtime_path_cannot_survive(name, tmp_path):
 @pytest.mark.parametrize(
     ("name", "content"),
     [
-        ("ci/run", 'exec claude --dangerous\n'),
+        ("ci/run", "exec claude --dangerous\n"),
         ("workflow/runner.py", 'os.execvp("claude", ["claude"])\n'),
         ("scripts/bootstrap", 'CLAUDE_CI_HOME="$HOME/no"\n'),
         (".github/workflows/agent.yml", "    - uses: anthropics/claude-code-action@v1\n"),
