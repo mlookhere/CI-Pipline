@@ -150,6 +150,7 @@ def test_shared_shell_resolves_the_same_chatfreept_ci_runtime():
 
 def test_ci_stage_configuration_does_not_require_legacy_file(tmp_path):
     import shutil
+
     import chatfreept_stages as stages
 
     folder = tmp_path / ".chatfreept"

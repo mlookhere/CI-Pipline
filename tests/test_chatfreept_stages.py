@@ -89,7 +89,7 @@ def test_group_with_no_caller_cannot_be_used_to_hide_missing_stage(inputs):
 def test_policy_divergence_fails_before_running_commands(inputs):
     modern, policy = copy.deepcopy(inputs)
     policy["commands"]["unit"] = ["exit 0"]
-    assert any("differs from policy CI" in error for error in neutral.validate_config(modern, policy))
+    assert any("differs from ChatGPT policy" in error for error in neutral.validate_config(modern, policy))
 
 
 def test_bad_json_causes_error_not_success(tmp_path):
