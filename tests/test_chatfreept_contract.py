@@ -61,14 +61,21 @@ def test_contract_refuses_invalid_metadata(inputs, field, value, expected):
 def test_missing_required_job_is_rejected_even_if_legacy_config_agrees(inputs):
     project, legacy, workflows = copy.deepcopy(inputs)
     workflow = ".github/workflows/ci-pr.yml"
-    workflows[workflow] = workflows[workflow].replace("    name: Fast deterministic gates", "    name: Renamed fast")
-    assert any("Fast deterministic gates" in message for message in contract.check_project(project, legacy, workflows))
+    workflows[workflow] = workflows[workflow].replace(
+        "    name: Fast deterministic gates", "    name: Renamed fast"
+    )
+    assert any(
+        "Fast deterministic gates" in message
+        for message in contract.check_project(project, legacy, workflows)
+    )
 
 
 def test_stale_production_metadata_is_rejected(inputs):
     project, legacy, workflows = copy.deepcopy(inputs)
     legacy["branches"]["production"] = "main"
-    assert any("production branch" in message for message in contract.check_project(project, legacy, workflows))
+    assert any(
+        "production branch" in message for message in contract.check_project(project, legacy, workflows)
+    )
 
 
 def test_unreadable_manifest_fails_closed(tmp_path):

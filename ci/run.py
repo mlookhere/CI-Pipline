@@ -132,8 +132,10 @@ def stage_commands(stage: str, config: dict[str, Any]) -> list[tuple[str, str]]:
             result.append((group, "__QUALITY__"))
             continue
         commands = command_groups.get(group)
-        if not isinstance(commands, list) or not commands or any(
-            not isinstance(command, str) or not command.strip() for command in commands
+        if (
+            not isinstance(commands, list)
+            or not commands
+            or any(not isinstance(command, str) or not command.strip() for command in commands)
         ):
             raise SystemExit(f"stage {stage!r} has empty or missing command group {group!r}")
         result.extend((group, command) for command in commands)

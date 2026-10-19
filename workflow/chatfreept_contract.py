@@ -96,9 +96,7 @@ def check_tracking(project: dict[str, Any], legacy: dict[str, Any]) -> list[str]
     return failures
 
 
-def check_job_definitions(
-    kind: str, names: list[str], workflows: dict[str, str]
-) -> list[str]:
+def check_job_definitions(kind: str, names: list[str], workflows: dict[str, str]) -> list[str]:
     failures: list[str] = []
     available: set[str] = set()
     for path in WORKFLOWS[kind]:
@@ -141,9 +139,7 @@ def check_stage_entries(stage: str, selected: Any, commands: dict[str, Any]) -> 
     for group in selected:
         entries = commands.get(group)
         if group != "quality" and (
-            not isinstance(entries, list)
-            or not entries
-            or any(not nonempty(cmd) for cmd in entries)
+            not isinstance(entries, list) or not entries or any(not nonempty(cmd) for cmd in entries)
         ):
             failures.append(f"project.json: {stage} references empty or missing group {group!r}")
     return failures
@@ -193,6 +189,7 @@ def check_project(project: Any, legacy: Any, workflows: dict[str, str]) -> list[
 
 def validate_repository(root: Path = ROOT) -> list[str]:
     """Read all inputs; missing files and invalid JSON are errors, never empty defaults."""
+
     def read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
 
