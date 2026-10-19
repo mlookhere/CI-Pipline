@@ -24,8 +24,7 @@
         ".github/actions/**",
         "ci/**",
         "workflow/**",
-        ".claude/**",
-        ".claude-workflow.json"
+        ".chatfreept/**"
       ],
       "risk:database": [
         "**/migrations/**",
