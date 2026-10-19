@@ -155,3 +155,14 @@ def test_repo_contains_tracked_neutral_assets():
     assert "workflow/pipeline_sync.py" in files
     assert ".chatfreept/ci.json" in files
     assert all(not path.startswith(".claude/") for path in files)
+
+
+def test_symlinked_parent_directory_is_rejected(tmp_path):
+    upstream = fixture(tmp_path / "upstream")
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (consumer / "workflow").symlink_to(external, target_is_directory=True)
+    assert sync.report(upstream, consumer, mode="install") == 1
+    assert not (external / "helper.py").exists()

@@ -93,6 +93,11 @@ def read_lock(root: Path) -> dict[str, str]:
     return files
 
 
+def unsafe_target(consumer: Path, name: str) -> bool:
+    pieces = Path(name).parts
+    return any((consumer.joinpath(*pieces[:index])).is_symlink() for index in range(1, len(pieces) + 1))
+
+
 def plan(upstream: Path, consumer: Path) -> dict[str, Any]:
     source = portable_files(upstream)
     if not source:
@@ -101,7 +106,7 @@ def plan(upstream: Path, consumer: Path) -> dict[str, Any]:
     changes: dict[str, str] = {}
     for name, checksum in sorted(source.items()):
         path = consumer / name
-        if path.is_symlink():
+        if unsafe_target(consumer, name):
             changes[name] = "conflict"
         elif not path.is_file():
             changes[name] = "missing"
