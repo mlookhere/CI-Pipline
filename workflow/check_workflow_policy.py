@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-CONFIG = ROOT / ".claude-workflow.json"
+CONFIG = ROOT / ".chatfreept" / "github.json"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 
 RULES = [

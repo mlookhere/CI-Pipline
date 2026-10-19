@@ -127,3 +127,14 @@ def test_bootstrap_and_runner_use_same_home_configuration():
     assert 'CHATFREEPT_CI_HOME' in script
     assert "chatfreept-ci/v1" in script
     assert "CLAUDE_CI_HOME" not in script
+
+
+def test_policy_carries_required_repository_configuration():
+    from chatfreept_stages import read_config
+
+    policy = json.loads((ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
+    stages = read_config(ROOT)
+    assert policy["github"]["expected_repository"] == "CI-Pipline"
+    assert policy["commands"] == stages["commands"]
+    assert policy["stages"] == stages["stages"]
+    assert "project" in policy

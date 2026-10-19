@@ -143,5 +143,12 @@
     "bootstrap-ci": [
       "bootstrap_ci"
     ]
+  },
+  "project": {
+    "package_dir": "",
+    "packaged_assets": [],
+    "typed_advisory_witness": "",
+    "executables": [],
+    "forbidden_call_sites": []
   }
 }
