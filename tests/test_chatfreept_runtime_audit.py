@@ -63,5 +63,6 @@ def test_legacy_agent_invoker_is_not_an_approved_entry_point():
     from self_test import CONTROL_PLANE_EXECUTABLES
 
     assert "scripts/claude-exec" not in CONTROL_PLANE_EXECUTABLES
+    assert "scripts/claude-lease" not in CONTROL_PLANE_EXECUTABLES
     assert "scripts/bootstrap" in CONTROL_PLANE_EXECUTABLES
     assert "ci/run" in CONTROL_PLANE_EXECUTABLES
