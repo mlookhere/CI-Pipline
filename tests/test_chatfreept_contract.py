@@ -158,3 +158,12 @@ def test_ci_stage_configuration_does_not_require_legacy_file(tmp_path):
     for name in ("ci.json", "github.json"):
         shutil.copyfile(ROOT / ".chatfreept" / name, folder / name)
     assert stages.read_config(tmp_path)["version"] == 1
+
+
+def test_self_test_main_reads_chatgpt_policy_without_legacy_config():
+    import self_test
+
+    source = (ROOT / "workflow" / "self_test.py").read_text(encoding="utf-8")
+    assert 'config_path = ROOT / ".chatfreept" / "github.json"' in source
+    assert 'config_path = ROOT / ".claude-workflow.json"' not in source
+    assert self_test.load_json(ROOT / ".chatfreept" / "github.json", [])["version"] == 1

@@ -392,10 +392,10 @@ def check_labels(config: dict) -> list[str]:
     failures = []
     state_labels = list(config.get("github", {}).get("state_labels", []))
     if len(state_labels) != len(set(state_labels)):
-        failures.append(".claude-workflow.json: duplicate state labels")
+        failures.append(".chatfreept/github.json: duplicate state labels")
     risk_labels = set(config.get("github", {}).get("risk_paths", {}))
     if not all(label.startswith("risk:") for label in risk_labels):
-        failures.append(".claude-workflow.json: every changed-path label must start with risk:")
+        failures.append(".chatfreept/github.json: every changed-path label must start with risk:")
     return failures
 
 
@@ -425,7 +425,7 @@ def check_stage_commands(config: dict) -> list[str]:
         empty = [group for group in groups if group not in SENTINEL_GROUPS and not commands.get(group)]
         if empty:
             failures.append(
-                f".claude-workflow.json: stage {stage!r} runs nothing for "
+                f".chatfreept/github.json: stage {stage!r} runs nothing for "
                 f"{', '.join(repr(group) for group in empty)}; implement the group or remove "
                 "it from the stage"
             )
@@ -635,7 +635,7 @@ def check_entry_point_interpreters() -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Validate the repository-owned Claude Code workflow control plane."
+        description="Validate the repository-owned ChatGPT CI control plane."
     )
     parser.add_argument(
         "--ci", action="store_true", help="Treat portability warnings as CI failures where appropriate."
@@ -644,24 +644,24 @@ def main() -> int:
     failures: list[str] = []
     warnings: list[str] = []
 
-    config_path = ROOT / ".claude-workflow.json"
+    config_path = ROOT / ".chatfreept" / "github.json"
     config = load_json(config_path, failures)
     hooks_path = ROOT / ".claude" / "settings.json"
     hooks_config = load_json(hooks_path, failures)
 
-    if int(config.get("version", 0)) < 2:
-        failures.append(".claude-workflow.json: expected workflow schema version 2 or newer")
+    if type(config.get("version")) is not int or config["version"] != 1:
+        failures.append(".chatfreept/github.json: expected GitHub policy schema version 1")
     for branch_kind in ("integration", "production"):
         value = str(config.get("branches", {}).get(branch_kind, ""))
         if not value:
-            failures.append(f".claude-workflow.json: missing {branch_kind} branch")
+            failures.append(f".chatfreept/github.json: missing {branch_kind} branch")
         elif (
             subprocess.run(
                 ["git", "check-ref-format", "--branch", value], cwd=ROOT, capture_output=True
             ).returncode
             != 0
         ):
-            failures.append(f".claude-workflow.json: invalid {branch_kind} branch {value!r}")
+            failures.append(f".chatfreept/github.json: invalid {branch_kind} branch {value!r}")
 
     failures += check_hooks(hooks_config)
     failures += check_deny_rules(hooks_config)
@@ -690,9 +690,9 @@ def main() -> int:
     for failure in failures:
         print(f"failure: {failure}")
     if failures:
-        print(f"Claude Code workflow self-test failed with {len(failures)} finding(s).")
+        print(f"Chat FreePT workflow self-test failed with {len(failures)} finding(s).")
         return 1
-    print(f"Claude Code workflow self-test passed with {len(warnings)} warning(s).")
+    print(f"Chat FreePT workflow self-test passed with {len(warnings)} warning(s).")
     return 0
 
 

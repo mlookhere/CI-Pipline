@@ -436,7 +436,7 @@ def test_an_unreferenced_empty_group_is_allowed():
 
 def test_every_shipped_stage_runs_something():
     """The regression this Issue exists for, pinned against the real configuration file."""
-    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    config = json.loads((self_test.ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
 
     assert self_test.check_stage_commands(config) == []
 
@@ -515,7 +515,7 @@ def test_the_consumers_own_files_may_name_the_product(tmp_path, monkeypatch, rel
 
 def test_the_shipped_control_plane_names_no_product():
     """The regression this Issue exists for, against the real tree."""
-    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    config = json.loads((self_test.ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
 
     assert self_test.check_no_product_names(config) == []
 
@@ -540,7 +540,7 @@ def test_flow_init_has_the_file_it_reads():
 
 def test_the_token_control_block_its_readers_expect_is_declared():
     """Four modules read `token_control` and the shipped configuration defined none of it."""
-    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    config = json.loads((self_test.ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
 
     assert set(config["token_control"]) >= {
         "capture_noisy_commands",
@@ -557,7 +557,7 @@ def test_the_gate_stages_still_name_the_checks_that_matter(stage):
     `dependency_sync` because this repository has no distribution to build and building one
     is not what a vendored control plane is for. They must not lose the ones that can run.
     """
-    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    config = json.loads((self_test.ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
     required = {
         "release": {"security", "unit", "coverage"},
         "pr": {"unit", "coverage"},
@@ -580,7 +580,7 @@ def _pr_workflow() -> str:
 
 
 def _config() -> dict:
-    return json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    return json.loads((self_test.ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
 
 
 def test_a_dependency_audit_runs_on_every_pull_request():
@@ -710,7 +710,7 @@ def test_each_dependabot_ecosystem_declares_the_labels_its_own_files_require(eco
     made to pass -- Dependabot does not add labels later, and a human editing them is a human
     doing the bot's job every week.
     """
-    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    config = json.loads((self_test.ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
     risk_paths = config["github"]["risk_paths"]
     required = {
         label
@@ -845,7 +845,7 @@ def test_a_repository_with_a_package_still_is():
 
 def test_the_shipped_configuration_warns_about_nothing():
     """Whatever the rule is, this repository must satisfy it without a placeholder group."""
-    config = json.loads((self_test.ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+    config = json.loads((self_test.ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
 
     assert self_test.collect_warnings(config) == []
     assert "build" not in config["commands"], "the group only ever existed to silence the warning"
