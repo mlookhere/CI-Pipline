@@ -1,6 +1,6 @@
 # Chat FreePT CI operating contract
 
-> **Migration note:** This file documents desired ChatGPT behavior. The current repository still executes legacy Claude-configured code until the numbered migration slices land. Do not interpret this document as a completed implementation or as passing CI evidence.
+> **Verification note:** This document describes the ChatGPT-owned control plane. Each code change still requires verification of the exact GitHub head and every required Actions job. An unmerged development branch is not a released runtime.
 
 ## Execution authority
 
@@ -44,8 +44,16 @@ The execution source of truth is now `.chatfreept/ci.json` (schema version 1). `
 
 ## Runtime and GitHub policy cutover (slice #102 in progress)
 
-The headless CI virtual environment is now provisioned under `~/.local/share/chatfreept-ci/v1`, overridable by `CHATFREEPT_CI_HOME`. Both `scripts/bootstrap` and `ci/run.py` resolve that exact location. `.chatfreept/github.json` is the checked-in policy input for the ChatGPT project contract; its stage and command sets must match `.chatfreept/ci.json`. The legacy configuration and hook-era tests remain during a verified transition; this is not yet a claim that the entire repository is Claude-free.
+The headless CI virtual environment is now provisioned under `~/.local/share/chatfreept-ci/v1`, overridable by `CHATFREEPT_CI_HOME`. Both `scripts/bootstrap` and `ci/run.py` resolve that exact location. `.chatfreept/github.json` is the checked-in policy input for the ChatGPT project contract; its stage and command sets must match `.chatfreept/ci.json`. Runtime removal and exact-head gate verification are independently required before merging Item #102.
 
 ## Deterministic control Issue sync migration (slice #102 ongoing)
 
-`workflow/chatfreept_control.py` now renders the control Issue using GitHub's authenticated CLI in a deterministic Actions job, not an AI coding runner. `sync-control.yml` invokes this module, and `workflow/handle_pr_state.py` now reads the ChatGPT-native GitHub policy. The one-time control-block adapter preserves existing notes while transitioning the prior managed marker to the new `chatfreept-control` marker. Summary statuses from a check rollup are explicitly **not merge authorization**: skipped or unverified checks cannot be counted as required passes. Other legacy functions, hook tests and the optional advisory workflow still exist until the remainder of #102 is migrated; this draft must not merge prematurely.
+`workflow/chatfreept_control.py` now renders the control Issue using GitHub's authenticated CLI in a deterministic Actions job, not an AI coding runner. `sync-control.yml` invokes this module, and `workflow/handle_pr_state.py` now reads the ChatGPT-native GitHub policy. The one-time control-block adapter preserves existing notes while transitioning the prior managed marker to the new `chatfreept-control` marker. Summary statuses from a check rollup are explicitly **not merge authorization**: skipped or unverified checks cannot be counted as required passes. The migration is accepted only when the runtime audit and all protected required jobs pass on the final head; intermediate checks cannot authorize merging.
+
+## Repository engineering rules (migrated from historical agent notes)
+
+One change should have one controlling Issue, a `work/<issue>-slug` branch based on `dev`, and one PR into `dev`. The Issue is handoff truth, the PR is review truth, and freshly inspected Actions evidence is acceptance truth. Read all three before mutation. Update the same records instead of creating duplicate handoff documents, Issues or PRs.
+
+Use clear, focused code changes with regression coverage. Trace the actual execution path; no filler abstractions, blind retry loops, bypassed assertions, broad suppression, skipped checks or reduced security thresholds. Demonstrate new gates rejecting representative invalid inputs as well as accepting valid inputs. Keep consumer-specific package and build facts in consumer-owned configuration, never hard-code them into the vendored CI plane.
+
+Never expose credentials in source code, logs, prompts, CI artifacts or Issues. Never commit `.env` or tokens. Avoid force pushes, administrator merges, direct protected branch commits, `--no-verify` and destructive cleanup. GitHub branch protections and native workflow checks, not an optional coding-agent hook, govern these operations. Use `./scripts/bootstrap --ci`, `./ci/run fast` and `./ci/run pr`, and verify the same work against required GitHub Actions jobs. Existing PR status rollups are not independent proof of required-check completeness.
