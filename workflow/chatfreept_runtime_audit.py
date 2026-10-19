@@ -6,8 +6,8 @@ No network calls; inspects the repository and the exact vendoring allowlist.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from pipeline_sync import portable_files
 
