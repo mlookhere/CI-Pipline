@@ -14,7 +14,9 @@ LEGACY_PATH = ".claude-workflow.json"
 FIELDS = {"version", "commands", "stages", "quality"}
 STAGES = {"fast", "pr", "release", "nightly", "audit", "bootstrap-local", "bootstrap-ci"}
 GROUP_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
-PLACEHOLDER = re.compile(r"^\s*(?:true|:|#.*|TODO(?:\b|:)|CHANGE_ME(?:\b|:))\s*$", re.I)  # https://github.com/mlookhere/CI-Pipline/issues/97
+PLACEHOLDER = re.compile(
+    r"^\s*(?:true|:|#.*|TODO(?#97)(?:\b|:)|CHANGE_ME(?:\b|:))\s*$", re.I
+)
 
 
 def nonempty_command(command: Any) -> bool:

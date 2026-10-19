@@ -65,7 +65,11 @@ def test_undefined_stage_rejected(inputs):
 @pytest.mark.parametrize(
     "command",
     [
-        "", " ", "true", ":", "# silently skip",
+        "",
+        " ",
+        "true",
+        ":",
+        "# silently skip",
         pytest.param("TODO", id="#97-placeholder"),
         "CHANGE_ME",
     ],
