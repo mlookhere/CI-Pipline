@@ -36,13 +36,13 @@ resolve_system_python() {
 }
 
 resolve_python() {
-  local home="${CLAUDE_CI_HOME:-$HOME/.local/share/claude-code-ci/v2}"
+  local home="${CHATFREEPT_CI_HOME:-$HOME/.local/share/chatfreept-ci/v1}"
   local candidate
 
-  # CLAUDE_CI_PYTHON is probed like every other candidate. An interpreter that
+  # CHATFREEPT_CI_PYTHON is probed like every other candidate. An interpreter that
   # exists and is executable but does not run is exactly the failure this file
   # exists to prevent, and the value can come from the environment.
-  for candidate in "${CLAUDE_CI_PYTHON:-}" "$home/venv/bin/python" "$home/venv/Scripts/python.exe"; do
+  for candidate in "${CHATFREEPT_CI_PYTHON:-}" "$home/venv/bin/python" "$home/venv/Scripts/python.exe"; do
     if python_runs "$candidate"; then
       printf '%s\n' "$candidate"
       return 0

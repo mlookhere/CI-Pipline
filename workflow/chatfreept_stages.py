@@ -10,7 +10,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ".chatfreept/ci.json"
-LEGACY_PATH = ".claude-workflow.json"
+POLICY_PATH = ".chatfreept/github.json"
 FIELDS = {"version", "commands", "stages", "quality"}
 STAGES = {"fast", "pr", "release", "nightly", "audit", "bootstrap-local", "bootstrap-ci"}
 GROUP_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -57,9 +57,9 @@ def check_stages(value: Any, commands: dict[str, Any]) -> list[str]:
     return failures
 
 
-def validate_config(config: Any, legacy: Any) -> list[str]:
-    if not isinstance(config, dict) or not isinstance(legacy, dict):
-        return ["ci.json and legacy config must both be JSON objects"]
+def validate_config(config: Any, policy: Any) -> list[str]:
+    if not isinstance(config, dict) or not isinstance(policy, dict):
+        return ["ci.json and ChatGPT GitHub policy must both be JSON objects"]
     failures: list[str] = []
     unknown = set(config) - FIELDS
     if unknown:
@@ -72,9 +72,9 @@ def validate_config(config: Any, legacy: Any) -> list[str]:
     failures.extend(check_stages(stages, commands if isinstance(commands, dict) else {}))
     if not isinstance(config.get("quality"), dict) or not config["quality"]:
         failures.append("ci.json: quality policy must be a nonempty object")
-    for section in ("commands", "stages", "quality"):
-        if config.get(section) != legacy.get(section):
-            failures.append(f"ci.json: {section} differs from legacy CI during migration")
+    for section in ("commands", "stages"):
+        if config.get(section) != policy.get(section):
+            failures.append(f"ci.json: {section} differs from ChatGPT policy")
     return failures
 
 
@@ -82,10 +82,10 @@ def read_config(root: Path = ROOT) -> dict[str, Any]:
     """No fallback to legacy or empty commands: invalid configuration aborts execution."""
     try:
         config = json.loads((root / CONFIG_PATH).read_text(encoding="utf-8"))
-        legacy = json.loads((root / LEGACY_PATH).read_text(encoding="utf-8"))
+        policy = json.loads((root / POLICY_PATH).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"CI stage configuration unreadable: {exc}") from exc
-    failures = validate_config(config, legacy)
+    failures = validate_config(config, policy)
     if failures:
         raise ValueError("; ".join(failures))
     return config

@@ -33,7 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
-CONFIG = ROOT / ".claude-workflow.json"
+CONFIG = ROOT / ".chatfreept" / "github.json"
 
 
 def project() -> dict:

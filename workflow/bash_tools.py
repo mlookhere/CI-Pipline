@@ -29,7 +29,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROBE_VARIABLE = "CLAUDE_BASH_PROBE"
+PROBE_VARIABLE = "CHATFREEPT_BASH_PROBE"
 PROBE_VALUE = "environment-reaches-bash"
 _RESOLVED: str | None = None
 
@@ -47,7 +47,7 @@ def git_sibling_bash() -> str | None:
 
 def bash_candidates() -> list[str]:
     """Ordered candidates, most trustworthy first, with duplicates removed."""
-    ordered = [os.environ.get("CLAUDE_BASH") or None]
+    ordered = [os.environ.get("CHATFREEPT_BASH") or None]
     if os.name == "nt":
         ordered.append(git_sibling_bash())
         for variable in ("ProgramFiles", "ProgramFiles(x86)"):
@@ -107,7 +107,7 @@ def bash_command() -> str:
             raise SystemExit(
                 "no usable bash found. On Windows a bare `bash` is often the WSL launcher, "
                 "which cannot see this process's environment; install Git for Windows or set "
-                "CLAUDE_BASH to a bash that can."
+                "CHATFREEPT_BASH to a bash that can."
             )
     return _RESOLVED
 
