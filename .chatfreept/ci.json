@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "commands": {
+    "bootstrap_local": [
+      "\"$CI_PYTHON\" -m pytest --version",
+      "\"$CI_PYTHON\" -m mypy --version",
+      "\"$CI_PYTHON\" -m ruff --version",
+      "\"$CI_PYTHON\" -m pip_audit --version"
+    ],
+    "bootstrap_ci": [
+      "\"$CI_PYTHON\" -m pytest --version",
+      "\"$CI_PYTHON\" -m mypy --version",
+      "\"$CI_PYTHON\" -m ruff --version",
+      "\"$CI_PYTHON\" -m pip_audit --version"
+    ],
+    "format_check": [
+      "ruff format --check ."
+    ],
+    "lint": [
+      "ruff check ."
+    ],
+    "typecheck": [
+      "mypy"
+    ],
+    "unit": [
+      "\"$PROJECT_PYTHON\" -m pytest -q"
+    ],
+    "coverage": [
+      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=workflow --cov=ci --cov-report=term --cov-fail-under=60"
+    ],
+    "security": [
+      "pip-audit -r ci/requirements-ci.txt --strict"
+    ],
+    "workflow_self_test": [
+      "\"$CI_PYTHON\" workflow/self_test.py --ci"
+    ]
+  },
+  "stages": {
+    "fast": [
+      "workflow_self_test",
+      "quality",
+      "format_check",
+      "lint",
+      "typecheck"
+    ],
+    "pr": [
+      "unit",
+      "coverage"
+    ],
+    "release": [
+      "security",
+      "unit",
+      "coverage"
+    ],
+    "nightly": [
+      "security",
+      "unit",
+      "coverage"
+    ],
+    "audit": [
+      "security"
+    ],
+    "bootstrap-local": [
+      "bootstrap_local"
+    ],
+    "bootstrap-ci": [
+      "bootstrap_ci"
+    ]
+  },
+  "quality": {
+    "base_ref": "origin/dev",
+    "max_changed_file_lines": 1500,
+    "max_function_lines": 120,
+    "max_cyclomatic_complexity": 15,
+    "require_issue_for_todo": true,
+    "banned_phrases": [
+      "in today's fast-paced",
+      "it is important to note",
+      "delve into",
+      "seamlessly integrates",
+      "robust and scalable solution"
+    ],
+    "text_extensions": [
+      ".md",
+      ".mdx",
+      ".txt",
+      ".py"
+    ],
+    "source_extensions": [
+      ".py",
+      ".js",
+      ".ts"
+    ],
+    "exclude_globs": [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/coverage/**",
+      "**/.ci-venv/**",
+      "data/**",
+      "artifacts/**",
+      "**/*.min.js",
+      "**/*.map",
+      "**/fixtures/**",
+      "uv.lock",
+      "poetry.lock"
+    ],
+    "max_identical_command_failures": 3,
+    "max_pr_files": 80,
+    "max_pr_changed_lines": 4000
+  }
+}

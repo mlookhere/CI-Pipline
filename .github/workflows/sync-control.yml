@@ -8,7 +8,7 @@ on:
     # what this workflow renders: `open_issues_and_prs` reads a pull request's number, title,
     # headRefName, baseRefName, url and statusCheckRollup, and never its labels, while check
     # status arrives accurately through the `workflow_run` trigger below rather than on push.
-    # What they did do was fire three events in three seconds every time `./flow pr` created a
+    # What they did do was fire three events in three seconds every time ChatGPT GitHub MCP created a
     # pull request and then added its risk labels, so the first two runs were cancelled by the
     # third -- and a cancelled run is reported as a failed check (Issue #24).
     types: [opened, reopened, closed, ready_for_review, converted_to_draft]
@@ -74,7 +74,7 @@ jobs:
     concurrency:
       # Per trigger, not one group for the whole job. Only a `pull_request_target` run is
       # reported as a check on a pull request, and a global group let the other triggers
-      # cancel it: `./flow pr` creates the pull request, then labels the controlling Issue,
+      # cancel it: ChatGPT GitHub MCP creates the pull request, then labels the controlling Issue,
       # then rewrites the control Issue body, so two `issues` events land within a second of
       # the `pull_request_target` one and cancelled it. Trimming the pull-request event types
       # did not help, because the events doing the cancelling were never pull-request events
@@ -91,4 +91,4 @@ jobs:
       - name: Synchronize the pinned control Issue
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 workflow/claude_flow.py sync-control
+        run: python3 workflow/chatfreept_control.py

@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "name": "Chat FreePT CI Pipeline",
+  "repository": "mlookhere/CI-Pipline",
+  "status": "developing",
+  "agent": {
+    "provider": "chatgpt",
+    "tool": "github-mcp",
+    "exclusive": true,
+    "github_source_of_truth": true,
+    "background_worker": false
+  },
+  "branches": {
+    "integration": "dev",
+    "production": "master",
+    "requested_production": "main",
+    "default": "dev",
+    "rename_pending_verification": true
+  },
+  "tracking": {
+    "control_issue": 1,
+    "planning_issue": 95,
+    "work_prefix": "work",
+    "required_pr_sections": [
+      "Result",
+      "Implementation",
+      "Verification",
+      "Risk",
+      "Remaining work"
+    ],
+    "max_failed_fixes_per_cause": 3,
+    "lease_ttl_seconds": 1800
+  },
+  "commands": {
+    "bootstrap": "./scripts/bootstrap --ci",
+    "fast": "./ci/run fast",
+    "pr": "./ci/run pr",
+    "release": "./ci/run release",
+    "nightly": "./ci/run nightly",
+    "audit": "./ci/run audit"
+  },
+  "required_checks": {
+    "integration": [
+      "PR metadata",
+      "Fast deterministic gates",
+      "PR test/build gates",
+      "Dependency audit",
+      "Workflow policy"
+    ],
+    "production": [
+      "Release metadata",
+      "Full regression and production build",
+      "Workflow policy"
+    ],
+    "require_completed": true,
+    "zero_is_success": false
+  },
+  "migration": {
+    "legacy_runtime_present": false,
+    "neutral_migration_pending": false,
+    "do_not_vendor": [
+      ".claude/",
+      ".claude-workflow.json",
+      ".github/claude/",
+      "CLAUDE.md",
+      ".github/workflows/claude-review.yml",
+      "scripts/claude-exec",
+      "scripts/claude-lease"
+    ],
+    "verified_pull_request": 112
+  },
+  "slices": [
+    {
+      "number": 1,
+      "issue": 96,
+      "status": "complete"
+    },
+    {
+      "number": 2,
+      "issue": 97,
+      "status": "complete"
+    },
+    {
+      "number": 3,
+      "issue": 98,
+      "status": "complete"
+    },
+    {
+      "number": 4,
+      "issue": 99,
+      "status": "complete"
+    },
+    {
+      "number": 5,
+      "issue": 100,
+      "status": "complete"
+    },
+    {
+      "number": 6,
+      "issue": 101,
+      "status": "complete"
+    },
+    {
+      "number": 7,
+      "issue": 102,
+      "status": "complete"
+    },
+    {
+      "number": 8,
+      "issue": 103,
+      "status": "complete"
+    },
+    {
+      "number": 9,
+      "issue": 104,
+      "status": "active"
+    }
+  ],
+  "extension": {
+    "controller": "chrome-mv3-chatgpt-ui",
+    "observed_bundle": "0.8.9",
+    "protocol": ".chatfreept/extension.json",
+    "model_report_is_github_evidence": false
+  }
+}

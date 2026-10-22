@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "branches": {
+    "integration": "dev",
+    "production": "master"
+  },
+  "worktrees": {
+    "root": "../.worktrees",
+    "branch_prefix": "work"
+  },
+  "github": {
+    "control_issue_title": "[CONTROL] Current repository state",
+    "release_title_prefix": "[RELEASE]",
+    "state_labels": [
+      "state:ready",
+      "state:active",
+      "state:blocked",
+      "state:review",
+      "state:release-ready"
+    ],
+    "risk_paths": {
+      "risk:ci": [
+        ".github/workflows/**",
+        ".github/actions/**",
+        "ci/**",
+        "workflow/**",
+        ".chatfreept/**"
+      ],
+      "risk:database": [
+        "**/migrations/**",
+        "**/schema/**",
+        "**/schema.*"
+      ],
+      "risk:security": [
+        "**/auth/**",
+        "**/security/**",
+        "**/*permission*",
+        "**/*authorization*",
+        ".env.example"
+      ],
+      "risk:deployment": [
+        "ops/**",
+        "infra/**",
+        "Dockerfile",
+        "k8s/**",
+        "helm/**"
+      ],
+      "risk:dependencies": [
+        "pyproject.toml",
+        "requirements.txt",
+        "ci/requirements-ci.txt",
+        "uv.lock",
+        "poetry.lock"
+      ]
+    },
+    "branch_protection": {
+      "integration": {
+        "required_checks": [
+          "PR metadata",
+          "Fast deterministic gates",
+          "PR test/build gates",
+          "Dependency audit",
+          "Workflow policy"
+        ],
+        "required_approving_reviews": 0
+      },
+      "production": {
+        "required_checks": [
+          "Release metadata",
+          "Full regression and production build",
+          "Workflow policy"
+        ],
+        "required_approving_reviews": 0
+      }
+    },
+    "expected_owner": "mlookhere",
+    "expected_repository": "CI-Pipline"
+  },
+  "commands": {
+    "bootstrap_local": [
+      "\"$CI_PYTHON\" -m pytest --version",
+      "\"$CI_PYTHON\" -m mypy --version",
+      "\"$CI_PYTHON\" -m ruff --version",
+      "\"$CI_PYTHON\" -m pip_audit --version"
+    ],
+    "bootstrap_ci": [
+      "\"$CI_PYTHON\" -m pytest --version",
+      "\"$CI_PYTHON\" -m mypy --version",
+      "\"$CI_PYTHON\" -m ruff --version",
+      "\"$CI_PYTHON\" -m pip_audit --version"
+    ],
+    "format_check": [
+      "ruff format --check ."
+    ],
+    "lint": [
+      "ruff check ."
+    ],
+    "typecheck": [
+      "mypy"
+    ],
+    "unit": [
+      "\"$PROJECT_PYTHON\" -m pytest -q"
+    ],
+    "coverage": [
+      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=workflow --cov=ci --cov-report=term --cov-fail-under=60"
+    ],
+    "security": [
+      "pip-audit -r ci/requirements-ci.txt --strict"
+    ],
+    "workflow_self_test": [
+      "\"$CI_PYTHON\" workflow/self_test.py --ci"
+    ]
+  },
+  "stages": {
+    "fast": [
+      "workflow_self_test",
+      "quality",
+      "format_check",
+      "lint",
+      "typecheck"
+    ],
+    "pr": [
+      "unit",
+      "coverage"
+    ],
+    "release": [
+      "security",
+      "unit",
+      "coverage"
+    ],
+    "nightly": [
+      "security",
+      "unit",
+      "coverage"
+    ],
+    "audit": [
+      "security"
+    ],
+    "bootstrap-local": [
+      "bootstrap_local"
+    ],
+    "bootstrap-ci": [
+      "bootstrap_ci"
+    ]
+  },
+  "project": {
+    "package_dir": "",
+    "packaged_assets": [],
+    "typed_advisory_witness": "",
+    "executables": [],
+    "forbidden_call_sites": []
+  },
+  "tracking": {
+    "control_issue_max_active_rows": 20
+  }
+}

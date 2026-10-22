@@ -49,7 +49,7 @@ def witness() -> str:
     the check skips, saying so.
     """
     try:
-        config = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+        config = json.loads((ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ""
     return str(config.get("project", {}).get("typed_advisory_witness", ""))

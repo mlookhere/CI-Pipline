@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -12,34 +13,34 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / ".claude-workflow.json"
+CONFIG_PATH = ROOT / ".chatfreept" / "ci.json"
 ARTIFACT_DIR = ROOT / "artifacts" / "ci"
+SHA = re.compile(r"^[0-9a-f]{40}$")
 
 # workflow/ is not an importable package, so the path is extended rather than the resolver
-# duplicated here: claude_flow and self_test shell out to bash for the same reasons and must
+# duplicated here: the workflow utilities shell out to bash for the same reasons and must
 # agree with this file about which bash that is.
 sys.path.insert(0, str(ROOT / "workflow"))
 
 # E402 is suppressed for that reason alone -- the import cannot resolve until sys.path is
 # extended above. Same pattern as tests/test_workflow_policy.py.
 from bash_tools import bash_command  # noqa: E402
+from chatfreept_stages import read_config  # noqa: E402
 
 
 def ci_home() -> Path:
     """Root of the global CI runtime that scripts/bootstrap provisions."""
-    override = os.environ.get("CLAUDE_CI_HOME")
+    override = os.environ.get("CHATFREEPT_CI_HOME")
     if override:
         return Path(override)
-    return Path.home() / ".local" / "share" / "claude-code-ci" / "v2"
+    return Path.home() / ".local" / "share" / "chatfreept-ci" / "v1"
 
 
 def load_config() -> dict[str, Any]:
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise SystemExit(f"missing {CONFIG_PATH}") from None
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"invalid {CONFIG_PATH}: {exc}") from exc
+        return read_config(ROOT)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def run_command(command: str, env: dict[str, str]) -> dict[str, Any]:
@@ -122,16 +123,40 @@ def stage_commands(stage: str, config: dict[str, Any]) -> list[tuple[str, str]]:
     if stage not in stage_map:
         available = sorted(set(stage_map) | {"quality", "quality-staged", "list"})
         raise SystemExit(f"unknown stage {stage!r}; choose one of: {', '.join(available)}")
+    groups = stage_map[stage]
+    if not isinstance(groups, list) or not groups:
+        raise SystemExit(f"stage {stage!r} has no command groups")
     result: list[tuple[str, str]] = []
     command_groups = config.get("commands", {})
-    for group in stage_map[stage]:
+    for group in groups:
         if group == "quality":
             result.append((group, "__QUALITY__"))
             continue
-        for command in command_groups.get(group, []):
-            if command.strip():
-                result.append((group, command))
+        commands = command_groups.get(group)
+        if (
+            not isinstance(commands, list)
+            or not commands
+            or any(not isinstance(command, str) or not command.strip() for command in commands)
+        ):
+            raise SystemExit(f"stage {stage!r} has empty or missing command group {group!r}")
+        result.extend((group, command) for command in commands)
     return result
+
+
+def checked_checkout_revision() -> str:
+    """Refuse to run a stage when its checkout cannot be identified."""
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
+    sha = result.stdout.strip().lower()
+    if result.returncode != 0 or SHA.fullmatch(sha) is None:
+        raise SystemExit("CI checkout revision unavailable or invalid; refusing to report success")
+    return sha
 
 
 def main() -> int:
@@ -146,6 +171,7 @@ def main() -> int:
             print(f"{stage}: {', '.join(groups)}")
         return 0
 
+    checkout_sha = checked_checkout_revision()
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
     stage_started = dt.datetime.now(dt.timezone.utc)
@@ -157,7 +183,7 @@ def main() -> int:
     else:
         commands = stage_commands(args.stage, config)
         if not commands:
-            print(f"SKIP: no commands configured for stage {args.stage!r}")
+            raise SystemExit(f"stage {args.stage!r} has no commands")
         for group, command in commands:
             # Resolved per command rather than once per stage. bootstrap_ci
             # creates .venv in its first command, so PROJECT_PYTHON is unknown
@@ -180,14 +206,7 @@ def main() -> int:
     report = {
         "stage": args.stage,
         "success": success,
-        "commit": subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-        ).stdout.strip(),
+        "commit": checkout_sha,
         "started_at": stage_started.isoformat(),
         "ended_at": stage_ended.isoformat(),
         "records": records,

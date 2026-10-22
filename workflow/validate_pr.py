@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+CONFIG = json.loads((ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
+CONFIG["quality"] = json.loads((ROOT / ".chatfreept" / "ci.json").read_text(encoding="utf-8"))["quality"]
 LINK_RE = re.compile(r"\b(?:Refs|Fixes|Closes)\s+#(\d+)\b", re.IGNORECASE)
 STANDARD_SECTIONS = ("Result", "Implementation", "Verification", "Risk", "Remaining work")
 PLACEHOLDER_PATTERNS = (

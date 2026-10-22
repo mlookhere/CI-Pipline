@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = json.loads((ROOT / ".claude-workflow.json").read_text(encoding="utf-8"))
+CONFIG = json.loads((ROOT / ".chatfreept" / "github.json").read_text(encoding="utf-8"))
 
 
 def gh(*args: str, capture: bool = False) -> str:

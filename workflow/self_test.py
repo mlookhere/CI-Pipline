@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import importlib.util
 import io
 import json
 import os
@@ -15,21 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from bash_tools import bash_command
+from chatfreept_contract import validate_repository
+from chatfreept_extension_protocol import protocol as extension_protocol
+from chatfreept_runtime_audit import verify as verify_native_runtime
+from chatfreept_stages import validate_repository as validate_stage_repository
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED_HOOK_EVENTS = {
-    "SessionStart",
-    "SubagentStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PreCompact",
-    "PostCompact",
-    "SubagentStop",
-    "Stop",
-}
 REQUIRED_PR_SECTIONS = {"Issue", "Result", "Implementation", "Verification", "Risk", "Remaining work"}
 # `python3` as a command, not as part of resolve_python, PYTHON3_BIN, or a path fragment.
 BARE_PYTHON3 = re.compile(r"(?<![-\w])python3\b")
@@ -40,33 +30,15 @@ BARE_PYTHON3 = re.compile(r"(?<![-\w])python3\b")
 # every bit as bare as `python` while `python.sh` is a wrapper and must not be flagged.
 # `py` is the Windows launcher, which picks an interpreter this repository has not probed.
 BARE_PYTHON = re.compile(r"(?<![-\w./\\])(?:python(?:3(?:\.\d+)?)?(?:\.exe)?|py)(?![\w.\-])")
-# Hook commands go through this wrapper rather than naming an interpreter (Issue #38).
-HOOK_RUNNER = ".claude/hooks/run"
-# Where the tool taxonomy the policy hooks judge by actually lives.
-HOOK_COMMON = ".claude/hooks/common.py"
-# The events whose matcher decides whether a policy hook runs at all. Being outside one of
-# these is not weakened enforcement, it is none: the hook is never invoked, so nothing
-# fails, nothing is logged, and the tool is simply ungoverned (Issue #59).
-POLICY_MATCHED_EVENTS = ("PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure")
-# The whole command, anchored at both ends. A substring test for the runner passes for
-# `sh -c 'evil' # .claude/hooks/run` and for a runner call with `|| python x` appended;
-# there is exactly one shape a hook command is allowed to take, so require it exactly.
-HOOK_COMMAND = re.compile(
-    r'^bash "\$CLAUDE_PROJECT_DIR/\.claude/hooks/run" '
-    r'"\$CLAUDE_PROJECT_DIR/\.claude/hooks/[A-Za-z0-9_.-]+\.py"$'
-)
 SUBPROCESS_READERS = {"run", "check_output", "Popen"}
 # Redirection targets that hand output nowhere a codec could apply.
 NON_CAPTURING_TARGETS = {"DEVNULL", "STDOUT"}
 # The control plane's own entry points. These ship with it and are required wherever it is
 # adopted.
 CONTROL_PLANE_EXECUTABLES = (
-    "flow",
     "ci/run",
     "scripts/bootstrap",
     "scripts/setup-github",
-    "scripts/claude-lease",
-    "scripts/claude-exec",
     "scripts/validate-workflow",
 )
 
@@ -118,25 +90,6 @@ def command_exists(command: str) -> bool:
     )
 
 
-# Every prohibition `.claude/rules/command-policy.md` states in prose, as the settings entry
-# that enforces it. Nothing read `permissions` before, so an edit that deleted a rule -- and
-# `/permissions` deletes them one click at a time -- changed what the session was allowed to
-# do and failed no gate (Issue #90). Branch protection returns 403 on this plan, which makes
-# the admin-merge entry the only thing between a session and a required-checks bypass.
-REQUIRED_DENY_RULES = (
-    "Bash(git push --force *)",
-    "Bash(git push -f *)",
-    "Bash(git commit --no-verify *)",
-    "Bash(git push --no-verify *)",
-    "Bash(git reset --hard *)",
-    "Bash(git clean -f *)",
-    "Bash(gh pr merge --admin *)",
-    "Bash(gh secret *)",
-    "Bash(gh variable *)",
-    "Bash(docker system prune *)",
-)
-
-
 def check_workflow_policy() -> list[str]:
     """Run the policy checker, and treat any non-zero exit as a failure.
 
@@ -173,7 +126,7 @@ def check_workflow_policy() -> list[str]:
 # correct rather than coupling.
 # Trailing separators matter: `.claude` as a bare prefix also matches `.claude-workflow.json`,
 # which is the consumer's own file and the very place these values are supposed to live.
-PORTABLE_TREES = ("workflow/", "ci/", ".claude/")
+PORTABLE_TREES = ("workflow/", "ci/")
 PORTABLE_EXCEPTIONS = {"ci/requirements-ci.txt", "ci/mypy-advisory.ini"}
 
 
@@ -243,128 +196,8 @@ def check_no_product_names(config: dict) -> list[str]:
                 if name in line:
                     failures.append(
                         f"{relative}:{number}: names {name!r}, but this file is part of the "
-                        "portable control plane; read it from .claude-workflow.json instead"
+                        "portable control plane; read it from .chatfreept/github.json instead"
                     )
-    return failures
-
-
-def check_deny_rules(hooks_config: Any) -> list[str]:
-    """The written policy and the enforced policy have to be the same policy."""
-    if not isinstance(hooks_config, dict):
-        return []
-    permissions = hooks_config.get("permissions")
-    if not isinstance(permissions, dict):
-        return [".claude/settings.json: permissions block is missing"]
-    deny = permissions.get("deny")
-    if not isinstance(deny, list):
-        return [".claude/settings.json: permissions.deny must be a list"]
-    missing = [rule for rule in REQUIRED_DENY_RULES if rule not in deny]
-    if not missing:
-        return []
-    return [
-        ".claude/settings.json: permissions.deny is missing "
-        f"{', '.join(repr(rule) for rule in missing)}, which .claude/rules/command-policy.md "
-        "prohibits"
-    ]
-
-
-def check_hooks(hooks_config: Any) -> list[str]:
-    """Every lifecycle event wired, pointing at a real hook, with a sane timeout."""
-    failures: list[str] = []
-    hooks = hooks_config.get("hooks", {}) if isinstance(hooks_config, dict) else {}
-    missing_events = REQUIRED_HOOK_EVENTS - set(hooks)
-    if missing_events:
-        failures.append(
-            f".claude/settings.json: missing lifecycle hook events: {', '.join(sorted(missing_events))}"
-        )
-    for event, groups in hooks.items():
-        if not isinstance(groups, list):
-            failures.append(f".claude/settings.json: {event} must be a list")
-            continue
-        for group in groups:
-            for hook in group.get("hooks", []):
-                failures += check_hook_entry(event, hook)
-    return failures
-
-
-def hook_policy_matcher(failures: list[str]) -> str | None:
-    """The matcher the hooks' own tool taxonomy implies, read from the hooks themselves.
-
-    Loaded from source rather than restated here. Claude Code reads .claude/settings.json
-    as data and cannot call into this repository's code, so the matcher in that file is a
-    copy of the taxonomy by necessity -- and an uncompared copy is exactly how the
-    PowerShell tool came to sit outside every matcher while the settings file two keys away
-    switched it on. Comparing them is what makes common.py authoritative rather than merely
-    first.
-    """
-    path = ROOT / HOOK_COMMON
-    try:
-        spec = importlib.util.spec_from_file_location("hook_common", path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"no loader for {path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return str(module.POLICY_MATCHER)
-    except (OSError, ImportError, AttributeError, SyntaxError) as exc:
-        failures.append(f"{HOOK_COMMON}: POLICY_MATCHER could not be read ({exc})")
-        return None
-
-
-def check_policy_matchers(hooks_config: Any) -> list[str]:
-    """Every policy hook is registered for exactly the tools its code is written to judge."""
-    failures: list[str] = []
-    expected = hook_policy_matcher(failures)
-    if expected is None:
-        return failures
-    wanted = set(expected.split("|"))
-    hooks = hooks_config.get("hooks", {}) if isinstance(hooks_config, dict) else {}
-    for event in POLICY_MATCHED_EVENTS:
-        groups = hooks.get(event) or []
-        if not isinstance(groups, list):
-            continue
-        for group in groups:
-            actual = set(str(group.get("matcher", "")).split("|"))
-            if actual == wanted:
-                continue
-            uncovered = ", ".join(sorted(wanted - actual)) or "none"
-            failures.append(
-                f".claude/settings.json: {event} matcher disagrees with the tool taxonomy in "
-                f"{HOOK_COMMON} (uncovered: {uncovered}). A tool outside the matcher never "
-                f'reaches the hook, so no policy applies to it. Set the matcher to "{expected}", '
-                "or change COMMAND_TOOLS/WRITE_TOOLS if the taxonomy is what moved."
-            )
-    return failures
-
-
-def check_hook_entry(event: str, hook: dict) -> list[str]:
-    failures = []
-    command = str(hook.get("command", ""))
-    # Every referenced file, not just the first: the command now names the runner and the
-    # hook module, and checking only one of them leaves the other free to go missing.
-    for name in re.findall(r"/\.claude/hooks/([A-Za-z0-9_.-]+)", command):
-        if not (ROOT / ".claude" / "hooks" / name).is_file():
-            failures.append(f".claude/settings.json: {event} references missing {name}")
-    # A hook command is an entry point too, and a silently dead hook stops enforcing policy
-    # without failing anything -- no gate fails, no command fails, nothing is printed, and
-    # pre_tool_policy simply stops denying what it denies. On Windows both `python3` and
-    # `python` are routinely the Microsoft Store stub, which is on PATH and exits without
-    # running anything; on Debian and Ubuntu `python` does not exist at all (Issues #35, #38).
-    if BARE_PYTHON.search(command) or BARE_PYTHON3.search(command):
-        failures.append(
-            f".claude/settings.json: {event} names an interpreter directly; launch the hook "
-            f"through {HOOK_RUNNER}, which probes one interpreter, memoises it, and says so "
-            "loudly when nothing resolves"
-        )
-    elif not HOOK_COMMAND.match(command):
-        failures.append(
-            f".claude/settings.json: {event} is not exactly a {HOOK_RUNNER} invocation, so a "
-            "hook that cannot start could still fail silently; the command must be "
-            f'bash "$CLAUDE_PROJECT_DIR/{HOOK_RUNNER}" followed by one quoted hook path and '
-            "nothing else"
-        )
-    timeout = int(hook.get("timeout", 0) or 0)
-    if timeout <= 0 or timeout > 60:
-        failures.append(f".claude/settings.json: {event} timeout must be within 1..60 seconds")
     return failures
 
 
@@ -390,10 +223,10 @@ def check_labels(config: dict) -> list[str]:
     failures = []
     state_labels = list(config.get("github", {}).get("state_labels", []))
     if len(state_labels) != len(set(state_labels)):
-        failures.append(".claude-workflow.json: duplicate state labels")
+        failures.append(".chatfreept/github.json: duplicate state labels")
     risk_labels = set(config.get("github", {}).get("risk_paths", {}))
     if not all(label.startswith("risk:") for label in risk_labels):
-        failures.append(".claude-workflow.json: every changed-path label must start with risk:")
+        failures.append(".chatfreept/github.json: every changed-path label must start with risk:")
     return failures
 
 
@@ -423,7 +256,7 @@ def check_stage_commands(config: dict) -> list[str]:
         empty = [group for group in groups if group not in SENTINEL_GROUPS and not commands.get(group)]
         if empty:
             failures.append(
-                f".claude-workflow.json: stage {stage!r} runs nothing for "
+                f".chatfreept/github.json: stage {stage!r} runs nothing for "
                 f"{', '.join(repr(group) for group in empty)}; implement the group or remove "
                 "it from the stage"
             )
@@ -632,9 +465,7 @@ def check_entry_point_interpreters() -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Validate the repository-owned Claude Code workflow control plane."
-    )
+    parser = argparse.ArgumentParser(description="Validate the repository-owned ChatGPT CI control plane.")
     parser.add_argument(
         "--ci", action="store_true", help="Treat portability warnings as CI failures where appropriate."
     )
@@ -642,32 +473,29 @@ def main() -> int:
     failures: list[str] = []
     warnings: list[str] = []
 
-    config_path = ROOT / ".claude-workflow.json"
+    config_path = ROOT / ".chatfreept" / "github.json"
     config = load_json(config_path, failures)
-    hooks_path = ROOT / ".claude" / "settings.json"
-    hooks_config = load_json(hooks_path, failures)
 
-    if int(config.get("version", 0)) < 2:
-        failures.append(".claude-workflow.json: expected workflow schema version 2 or newer")
+    if type(config.get("version")) is not int or config["version"] != 1:
+        failures.append(".chatfreept/github.json: expected GitHub policy schema version 1")
     for branch_kind in ("integration", "production"):
         value = str(config.get("branches", {}).get(branch_kind, ""))
         if not value:
-            failures.append(f".claude-workflow.json: missing {branch_kind} branch")
+            failures.append(f".chatfreept/github.json: missing {branch_kind} branch")
         elif (
             subprocess.run(
                 ["git", "check-ref-format", "--branch", value], cwd=ROOT, capture_output=True
             ).returncode
             != 0
         ):
-            failures.append(f".claude-workflow.json: invalid {branch_kind} branch {value!r}")
+            failures.append(f".chatfreept/github.json: invalid {branch_kind} branch {value!r}")
 
-    failures += check_hooks(hooks_config)
-    failures += check_deny_rules(hooks_config)
-    failures += check_policy_matchers(hooks_config)
     failures += check_executables(config)
     failures += check_pr_template()
     failures += check_labels(config)
     failures += check_stage_commands(config)
+    failures += validate_repository(ROOT)
+    failures += validate_stage_repository(ROOT)
     failures += check_no_product_names(config)
     warnings += collect_warnings(config)
     failures += check_tracked_artifacts()
@@ -676,7 +504,13 @@ def main() -> int:
 
     check_python(failures)
 
+    try:
+        extension_protocol()
+    except (OSError, ValueError) as exc:
+        failures.append(f"extension protocol invalid: {exc}")
+
     failures += check_workflow_policy()
+    failures += verify_native_runtime(ROOT)
 
     if args.ci and not command_exists("git"):
         failures.append("git is required in CI")
@@ -686,9 +520,9 @@ def main() -> int:
     for failure in failures:
         print(f"failure: {failure}")
     if failures:
-        print(f"Claude Code workflow self-test failed with {len(failures)} finding(s).")
+        print(f"Chat FreePT workflow self-test failed with {len(failures)} finding(s).")
         return 1
-    print(f"Claude Code workflow self-test passed with {len(warnings)} warning(s).")
+    print(f"Chat FreePT workflow self-test passed with {len(warnings)} warning(s).")
     return 0
 
 
