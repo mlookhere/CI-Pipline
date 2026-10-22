@@ -166,3 +166,9 @@ def test_symlinked_parent_directory_is_rejected(tmp_path):
     (consumer / "workflow").symlink_to(external, target_is_directory=True)
     assert sync.report(upstream, consumer, mode="install") == 1
     assert not (external / "helper.py").exists()
+
+
+def test_extension_v1_protocol_is_vendored_with_runtime():
+    files = sync.portable_files(ROOT)
+    assert ".chatfreept/extension.json" in files
+    assert "workflow/chatfreept_extension_protocol.py" in files

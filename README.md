@@ -54,3 +54,5 @@ Only reviewed runtime-neutral CI assets are owned. The installer preserves consu
 - Keep tokens, credentials, .env files, and private client data out of commits, prompts, Issues, logs, and artifacts.
 
 This repository is a vendorable CI plane, not a deployable application. See the [operating contract](docs/CHATFREEPT_CI.md), [master plan](docs/MASTER_PLAN.md), [check provenance](docs/CHATFREEPT_CHECKS.md), and [failure diagnostics](docs/CHATFREEPT_DIAGNOSTICS.md).
+
+The Chrome Chat FreePT extension uses the [versioned continuation contract](docs/CHATFREEPT_EXTENSION_PROTOCOL.md); model-reported CI status is never GitHub merge authority.
