@@ -17,7 +17,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 TREES = ("ci", "scripts", "workflow")
 WORKFLOWS = frozenset(("ci-pr.yml", "ci-release.yml", "security.yml", "nightly-quality.yml"))
-FILES = (".chatfreept/ci.json", ".pre-commit-config.yaml", ".gitattributes")
+FILES = (".chatfreept/ci.json", ".chatfreept/extension.json", ".pre-commit-config.yaml", ".gitattributes")
 EXCLUDED = frozenset(
     (
         "ci/mypy-advisory.ini",
