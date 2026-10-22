@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / ".chatfreept" / "ci.json"
 ARTIFACT_DIR = ROOT / "artifacts" / "ci"
+SHA = re.compile(r"^[0-9a-f]{40}$")
 
 # workflow/ is not an importable package, so the path is extended rather than the resolver
 # duplicated here: the workflow utilities shell out to bash for the same reasons and must
@@ -141,6 +143,22 @@ def stage_commands(stage: str, config: dict[str, Any]) -> list[tuple[str, str]]:
     return result
 
 
+def checked_checkout_revision() -> str:
+    """Refuse to run a stage when its checkout cannot be identified."""
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
+    sha = result.stdout.strip().lower()
+    if result.returncode != 0 or SHA.fullmatch(sha) is None:
+        raise SystemExit("CI checkout revision unavailable or invalid; refusing to report success")
+    return sha
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run repository-owned CI stages.")
     parser.add_argument("stage")
@@ -153,6 +171,7 @@ def main() -> int:
             print(f"{stage}: {', '.join(groups)}")
         return 0
 
+    checkout_sha = checked_checkout_revision()
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
     stage_started = dt.datetime.now(dt.timezone.utc)
@@ -187,14 +206,7 @@ def main() -> int:
     report = {
         "stage": args.stage,
         "success": success,
-        "commit": subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-        ).stdout.strip(),
+        "commit": checkout_sha,
         "started_at": stage_started.isoformat(),
         "ended_at": stage_ended.isoformat(),
         "records": records,
