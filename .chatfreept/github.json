@@ -102,7 +102,7 @@
       "\"$PROJECT_PYTHON\" -m pytest -q"
     ],
     "coverage": [
-      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=workflow --cov=ci --cov-report=term --cov-fail-under=52"
+      "\"$PROJECT_PYTHON\" -m pytest tests -q --cov=workflow --cov=ci --cov-report=term --cov-fail-under=60"
     ],
     "security": [
       "pip-audit -r ci/requirements-ci.txt --strict"

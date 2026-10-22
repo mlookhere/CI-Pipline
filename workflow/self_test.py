@@ -15,6 +15,7 @@ from typing import Any
 
 from bash_tools import bash_command
 from chatfreept_contract import validate_repository
+from chatfreept_extension_protocol import protocol as extension_protocol
 from chatfreept_runtime_audit import verify as verify_native_runtime
 from chatfreept_stages import validate_repository as validate_stage_repository
 
@@ -502,6 +503,11 @@ def main() -> int:
     failures += check_entry_point_interpreters()
 
     check_python(failures)
+
+    try:
+        extension_protocol()
+    except (OSError, ValueError) as exc:
+        failures.append(f"extension protocol invalid: {exc}")
 
     failures += check_workflow_policy()
     failures += verify_native_runtime(ROOT)

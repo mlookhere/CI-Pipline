@@ -56,9 +56,8 @@
     "zero_is_success": false
   },
   "migration": {
-    "legacy_runtime_present": true,
-    "legacy_config": ".claude-workflow.json",
-    "neutral_migration_pending": true,
+    "legacy_runtime_present": false,
+    "neutral_migration_pending": false,
     "do_not_vendor": [
       ".claude/",
       ".claude-workflow.json",
@@ -67,7 +66,8 @@
       ".github/workflows/claude-review.yml",
       "scripts/claude-exec",
       "scripts/claude-lease"
-    ]
+    ],
+    "verified_pull_request": 112
   },
   "slices": [
     {
@@ -103,17 +103,23 @@
     {
       "number": 7,
       "issue": 102,
-      "status": "active"
+      "status": "complete"
     },
     {
       "number": 8,
       "issue": 103,
-      "status": "ready"
+      "status": "active"
     },
     {
       "number": 9,
       "issue": 104,
       "status": "ready"
     }
-  ]
+  ],
+  "extension": {
+    "controller": "chrome-mv3-chatgpt-ui",
+    "observed_bundle": "0.8.9",
+    "protocol": ".chatfreept/extension.json",
+    "model_report_is_github_evidence": false
+  }
 }

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "controller": "chatgpt-ui",
+  "consumer": "Chrome MV3 Chat FreePT",
+  "observed_bundle_version": "0.8.9",
+  "supported_origins": [
+    "chatgpt.com",
+    "chat.openai.com"
+  ],
+  "statuses": [
+    "Continue",
+    "Needs input",
+    "Plan ready",
+    "Testing",
+    "Complete",
+    "Error"
+  ],
+  "required_fields": [
+    "V",
+    "PHASE",
+    "REPO",
+    "NOTE"
+  ],
+  "github_is_source_of_truth": true,
+  "completion_requires_fresh_audit": true,
+  "model_status_is_ci_evidence": false
+}
