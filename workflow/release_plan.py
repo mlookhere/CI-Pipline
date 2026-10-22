@@ -8,7 +8,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"^[a-f0-9]{40}$")
@@ -44,6 +44,7 @@ def large_change(diff: dict[str, Any], quality: dict[str, Any]) -> bool:
 def matching_pr(observation: dict[str, Any], source: str, target: str, issue: int) -> int | None:
     prs = observation.get("open_pull_requests")
     require(isinstance(prs, list), "complete open release PR list is required")
+    prs = cast(list[dict[str, Any]], prs)
     count = observation.get("open_pull_requests_total")
     require(type(count) is int and count == len(prs), "open release PR list must be fully paginated")
     matches = []
@@ -105,11 +106,13 @@ def plan(observed: Any, github: Any, ci: Any) -> dict[str, Any]:
     issue = mapping(facts.get("issue"), "release Issue")
     number = issue.get("number")
     require(type(number) is int and number > 0 and issue.get("state") == "open", "release Issue is not open")
+    number = cast(int, number)
     have = labels(issue.get("labels"))
     require("type:release" in have, "release Issue needs type:release")
     diff = mapping(facts.get("diff"), "release diff")
     paths = diff.get("paths")
     require(isinstance(paths, list) and all(isinstance(p, str) and p for p in paths), "invalid diff paths")
+    paths = cast(list[str], paths)
     require(len(paths) == diff.get("changed_files"), "release diff paths are incomplete")
     oversized = large_change(diff, quality)
     need = {"type:release", "risk:deployment", *required_risks(paths, policy)}
