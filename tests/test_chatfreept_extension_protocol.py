@@ -14,7 +14,9 @@ import chatfreept_extension_protocol as extension  # noqa: E402
 REPO = "mlookhere/CI-Pipline"
 
 
-def reply(status: str = "Continue", checks: str = "5 required / 5 passed / 0 pending / 0 failed", ci: str = "Passed") -> str:
+def reply(
+    status: str = "Continue", checks: str = "5 required / 5 passed / 0 pending / 0 failed", ci: str = "Passed"
+) -> str:
     fence = chr(96) * 3
     return (
         "Narrative before the last marker.\n\n"
@@ -58,7 +60,9 @@ def test_model_reported_ci_passed_remains_advisory():
     assert result["merge_authorized"] is False
 
 
-@pytest.mark.parametrize("checks", ["0 required / 0 passed / 0 pending / 0 failed", "5 required / 3 passed / 0 pending / 0 failed"])
+@pytest.mark.parametrize(
+    "checks", ["0 required / 0 passed / 0 pending / 0 failed", "5 required / 3 passed / 0 pending / 0 failed"]
+)
 def test_zero_or_inconsistent_required_checks_fail_closed(checks):
     with pytest.raises(ValueError, match="checks"):
         extension.interpret(reply(checks=checks), REPO)
@@ -70,7 +74,9 @@ def test_pending_checks_must_not_be_reported_as_passed():
 
 
 def test_running_with_pending_is_not_mergeable():
-    result = extension.interpret(reply(checks="5 required / 2 passed / 3 pending / 0 failed", ci="Running"), REPO)
+    result = extension.interpret(
+        reply(checks="5 required / 2 passed / 3 pending / 0 failed", ci="Running"), REPO
+    )
     assert result["fields"]["CI"] == "Running"
     assert not result["merge_authorized"]
 
@@ -93,7 +99,9 @@ def test_invalid_or_cross_repo_marker_is_rejected(text):
 
 def test_client_fence_id_and_free_form_checks_are_supported():
     fence = chr(96) * 3
-    text = reply(checks="waiting on Actions", ci="Running").replace(f"{fence}chatfreept\n", f'{fence}chatfreept id="card"\n')
+    text = reply(checks="waiting on Actions", ci="Running").replace(
+        f"{fence}chatfreept\n", f'{fence}chatfreept id="card"\n'
+    )
     result = extension.interpret(text, REPO)
     assert result["status"] == "Continue"
     assert any("display only" in warning for warning in result["warnings"])

@@ -11,10 +11,16 @@ from typing import Any
 from urllib.parse import urlsplit
 
 SPEC = Path(__file__).resolve().parents[1] / ".chatfreept" / "extension.json"
-FENCE = re.compile(r"(?s)" + re.escape(chr(96) * 3) + r"chatfreept[^\n]*\n(.*?)\n" + re.escape(chr(96) * 3) + r"\s*$")
-MARKER = re.compile(r"^CHATFREEPT_STATUS:\s*(Continue|Needs input|Plan ready|Testing|Complete|Error)\s*$", re.I)
+FENCE = re.compile(
+    r"(?s)" + re.escape(chr(96) * 3) + r"chatfreept[^\n]*\n(.*?)\n" + re.escape(chr(96) * 3) + r"\s*$"
+)
+MARKER = re.compile(
+    r"^CHATFREEPT_STATUS:\s*(Continue|Needs input|Plan ready|Testing|Complete|Error)\s*$", re.I
+)
 FIELD = re.compile(r"^([A-Z]+):\s*(.+?)\s*$")
-COUNTS = re.compile(r"^(\d+) required\s*/\s*(\d+) passed\s*/\s*(\d+) pending\s*/\s*(\d+) failed(?:\b.*)?$", re.I)
+COUNTS = re.compile(
+    r"^(\d+) required\s*/\s*(\d+) passed\s*/\s*(\d+) pending\s*/\s*(\d+) failed(?:\b.*)?$", re.I
+)
 ACTIONS = {
     "Continue": "resume",
     "Needs input": "pause_for_user",
@@ -23,7 +29,9 @@ ACTIONS = {
     "Complete": "audit_before_stop",
     "Error": "stop_on_error",
 }
-FIELDS = frozenset(("V", "PHASE", "REPO", "ITEM", "NOTE", "URL", "BRANCH", "ISSUE", "PR", "CI", "CHECKS", "ACTIONS"))
+FIELDS = frozenset(
+    ("V", "PHASE", "REPO", "ITEM", "NOTE", "URL", "BRANCH", "ISSUE", "PR", "CI", "CHECKS", "ACTIONS")
+)
 CI_VALUES = frozenset(("Not run", "Queued", "Running", "Passed", "Failed", "Cancelled", "Unknown"))
 
 
@@ -41,7 +49,10 @@ def valid_url(value: str, repository: str, path_kind: str) -> bool:
         return False
     if not url.path.startswith(prefix):
         return False
-    return path_kind == "any" or re.fullmatch(rf"/{re.escape(repository)}/{path_kind}/[1-9]\d*", url.path) is not None
+    return (
+        path_kind == "any"
+        or re.fullmatch(rf"/{re.escape(repository)}/{path_kind}/[1-9]\d*", url.path) is not None
+    )
 
 
 def fields_from_marker(message: str) -> tuple[str, dict[str, str]]:
