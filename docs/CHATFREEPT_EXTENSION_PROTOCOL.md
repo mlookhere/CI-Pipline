@@ -37,3 +37,7 @@ Successful CI for this pipeline repository is not evidence that a separate consu
 ## Autonomous workflow
 
 Each turn reads the existing control Issue, master plan, owning Issue, current work branch, relevant PR, exact-head Actions results and failing job logs. One slice = one Issue = one work branch = one PR. Fix the first causal failure, with bounded attempts per cause. Do not weaken checks. On a green PR, verify that every *required* check completed success on the precise head and that the protected branch allows the merge. After merging, close its Issue, update the control Issue and proceed to the next slice. Complete requires a separate comprehensive audit of open work, release and production validation.
+
+## Package release verification
+
+The reusable release manifest records a source commit, individual package files, SHA-256 hashes, sizes and a matching SHA256SUMS. Source identifiers must be full Git SHAs and consumers must supply the exact freshly verified GitHub checkout; placeholder or unverifiable commits are rejected. A Chrome extension consumer should package the actual approved build output (manifest and extension ZIP), not files scraped from the ChatGPT conversation or an uploaded ZIP of unknown source provenance. Release metadata validates bytes and identity only; the GitHub production release PR and its three required Actions checks still control promotion.
