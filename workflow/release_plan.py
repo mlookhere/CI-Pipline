@@ -51,8 +51,7 @@ def matching_pr(observation: dict[str, Any], source: str, target: str, issue: in
             continue
         require(type(pr.get("number")) is int and pr["number"] > 0, "release PR number missing")
         require(
-            isinstance(pr.get("body"), str)
-            and re.search(rf"\bRefs\s+#{issue}\b", pr["body"]) is not None,
+            isinstance(pr.get("body"), str) and re.search(rf"\bRefs\s+#{issue}\b", pr["body"]) is not None,
             "matching release PR is not linked to Issue",
         )
         matches.append(pr["number"])

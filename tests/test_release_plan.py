@@ -24,7 +24,11 @@ def facts():
         "expected_source_sha": "a" * 40,
         "expected_target_sha": "b" * 40,
         "issue": {"number": 120, "state": "open", "labels": ["type:release"]},
-        "diff": {"changed_files": 2, "changed_lines": 30, "paths": ["workflow/release_manifest.py", "README.md"]},
+        "diff": {
+            "changed_files": 2,
+            "changed_lines": 30,
+            "paths": ["workflow/release_manifest.py", "README.md"],
+        },
         "open_pull_requests": [],
     }
 
