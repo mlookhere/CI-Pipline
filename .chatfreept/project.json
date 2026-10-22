@@ -108,12 +108,12 @@
     {
       "number": 8,
       "issue": 103,
-      "status": "active"
+      "status": "complete"
     },
     {
       "number": 9,
       "issue": 104,
-      "status": "ready"
+      "status": "active"
     }
   ],
   "extension": {

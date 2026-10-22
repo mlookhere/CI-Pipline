@@ -1,6 +1,6 @@
 # MASTER PLAN — ChatGPT-native CI control plane
 
-> Status: **Items 1–7 merged, Item 8 active, Item 9 queued (2026-10-21)**. GitHub repository `mlookhere/CI-Pipline`; roadmap control [#95](https://github.com/mlookhere/CI-Pipline/issues/95). Each slice has its own Issue, branch from `dev`, pull request into `dev` and complete required Actions evidence.
+> Status: **Items 1–8 merged; Item 9 developing on Issue #104 and draft PR #117 (2026-10-22)**. GitHub repository `mlookhere/CI-Pipline`; roadmap control [#95](https://github.com/mlookhere/CI-Pipline/issues/95). Each slice has its own Issue, branch from `dev`, pull request into `dev` and complete required Actions evidence.
 
 ## Repository-grounded baseline (2026-10-18)
 
@@ -144,6 +144,7 @@ Every integration PR must satisfy all 5 currently required checks: `PR metadata`
 **Acceptance criteria**
 
 - [ ] Build `dev`→production release PRs only with complete metadata, diff summary, provenance and rollback.
+- [ ] Use the checked-in read-only release planner to refuse stale branch heads, incomplete PR pagination, duplicate PRs or missing release Issues; require a fresh GitHub MCP re-read before applying proposal actions.
 - [ ] Resolve automatic large-change labels on release Issue and PR via existing [#60](https://github.com/mlookhere/CI-Pipline/issues/60), without changing size budgets.
 - [ ] Do not rename or bypass protected `master`; introduce `main` only after equivalent required checks and protections are verified and any missing administrative decision is resolved.
 - [ ] Verify production's three required Actions checks and open plan Issue/PR state before completion.
