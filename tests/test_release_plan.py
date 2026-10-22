@@ -30,6 +30,7 @@ def facts():
             "paths": ["workflow/release_manifest.py", "README.md"],
         },
         "open_pull_requests": [],
+        "open_pull_requests_total": 0,
     }
 
 
@@ -66,6 +67,7 @@ def test_existing_large_issue_label_is_not_duplicated(facts):
 
 def test_existing_release_pr_is_resumed(facts):
     facts["open_pull_requests"] = [{"number": 141, "head": "dev", "base": "master", "body": "Refs #120"}]
+    facts["open_pull_requests_total"] = len(facts["open_pull_requests"])
     result = release.plan(facts, GITHUB, CI)
     assert result["action"] == "resume_pr" and result["pr_number"] == 141
 
@@ -91,12 +93,14 @@ def test_missing_or_stale_release_evidence_fails_closed(facts, mutate, error):
 def test_ambiguous_release_prs_are_rejected(facts):
     row = {"number": 142, "head": "dev", "base": "master", "body": "Refs #120"}
     facts["open_pull_requests"] = [row, dict(row, number=143)]
+    facts["open_pull_requests_total"] = len(facts["open_pull_requests"])
     with pytest.raises(ValueError, match="multiple open"):
         release.plan(facts, GITHUB, CI)
 
 
 def test_existing_wrong_issue_release_pr_is_not_duplicated(facts):
     facts["open_pull_requests"] = [{"number": 142, "head": "dev", "base": "master", "body": "Refs #999"}]
+    facts["open_pull_requests_total"] = len(facts["open_pull_requests"])
     with pytest.raises(ValueError, match="not linked"):
         release.plan(facts, GITHUB, CI)
 
@@ -108,4 +112,16 @@ def test_invalid_candidate_sha_and_identical_branches_fail(facts):
     facts["branches"]["dev"] = facts["branches"]["master"]
     facts["expected_source_sha"] = facts["branches"]["master"]
     with pytest.raises(ValueError, match="no new"):
+        release.plan(facts, GITHUB, CI)
+
+
+def test_partial_pr_pagination_cannot_be_treated_as_no_duplicates(facts):
+    facts["open_pull_requests_total"] = 1
+    with pytest.raises(ValueError, match="fully paginated"):
+        release.plan(facts, GITHUB, CI)
+
+
+def test_missing_pr_collection_count_fails_closed(facts):
+    del facts["open_pull_requests_total"]
+    with pytest.raises(ValueError, match="fully paginated"):
         release.plan(facts, GITHUB, CI)

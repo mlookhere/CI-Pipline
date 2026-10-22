@@ -31,6 +31,7 @@ The input is ephemeral, not part of the repository. Its schema contains:
 - issue: existing number, open state, list of existing labels including type:release
 - diff: changed_files, changed_lines, and the complete list of changed paths
 - open_pull_requests: complete list of objects with number, head branch, base branch and body
+- open_pull_requests_total: the fully paginated GitHub count, exactly matching the list length
 
 This **read-only** planner returns either propose_pr or resume_pr, the full required
 Issue/PR risk-label sets, release body, rollback reference and expected SHAs. It does

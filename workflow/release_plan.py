@@ -44,6 +44,8 @@ def large_change(diff: dict[str, Any], quality: dict[str, Any]) -> bool:
 def matching_pr(observation: dict[str, Any], source: str, target: str, issue: int) -> int | None:
     prs = observation.get("open_pull_requests")
     require(isinstance(prs, list), "complete open release PR list is required")
+    count = observation.get("open_pull_requests_total")
+    require(type(count) is int and count == len(prs), "open release PR list must be fully paginated")
     matches = []
     for entry in prs:
         pr = mapping(entry, "release PR")
