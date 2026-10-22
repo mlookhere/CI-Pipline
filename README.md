@@ -56,3 +56,5 @@ Only reviewed runtime-neutral CI assets are owned. The installer preserves consu
 This repository is a vendorable CI plane, not a deployable application. See the [operating contract](docs/CHATFREEPT_CI.md), [master plan](docs/MASTER_PLAN.md), [check provenance](docs/CHATFREEPT_CHECKS.md), and [failure diagnostics](docs/CHATFREEPT_DIAGNOSTICS.md).
 
 The Chrome Chat FreePT extension uses the [versioned continuation contract](docs/CHATFREEPT_EXTENSION_PROTOCOL.md); model-reported CI status is never GitHub merge authority.
+
+For release candidates, follow the [read-only production PR planner](docs/CHATFREEPT_RELEASE.md) and validate protected release checks before promoting to production.
