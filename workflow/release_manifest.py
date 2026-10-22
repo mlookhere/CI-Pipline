@@ -5,10 +5,12 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 
 METADATA = {"release-metadata.json", "SHA256SUMS"}
+SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def digest(path: Path) -> str:
@@ -29,7 +31,13 @@ def payload_files(root: Path) -> list[Path]:
     return files
 
 
+def check_commit(commit: str) -> None:
+    if SHA.fullmatch(commit) is None:
+        raise SystemExit("release source commit must be a complete lowercase Git SHA")
+
+
 def create(root: Path, commit: str) -> int:
+    check_commit(commit)
     root.mkdir(parents=True, exist_ok=True)
     files = payload_files(root)
     if not files:
@@ -60,6 +68,7 @@ def create(root: Path, commit: str) -> int:
 
 
 def verify(root: Path, commit: str) -> int:
+    check_commit(commit)
     metadata_path = root / "release-metadata.json"
     sums_path = root / "SHA256SUMS"
     if not metadata_path.is_file() or not sums_path.is_file():
@@ -69,7 +78,21 @@ def verify(root: Path, commit: str) -> int:
         raise SystemExit(
             f"release manifest commit {metadata.get('source_commit')!r} does not match expected {commit!r}"
         )
-    expected = {item["path"]: item for item in metadata.get("artifacts", [])}
+    declared = metadata.get("artifacts")
+    if not isinstance(declared, list) or not declared:
+        raise SystemExit("release manifest must declare nonempty artifacts")
+    expected = {}
+    for item in declared:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise SystemExit("release manifest contains a malformed artifact entry")
+        name = item["path"]
+        if name in expected:
+            raise SystemExit("release manifest contains duplicate artifact paths")
+        if not isinstance(item.get("sha256"), str) or re.fullmatch(r"[a-f0-9]{64}", item["sha256"]) is None:
+            raise SystemExit("release manifest contains an invalid artifact digest")
+        if type(item.get("size")) is not int or item["size"] < 0:
+            raise SystemExit("release manifest contains an invalid artifact size")
+        expected[name] = item
     actual_paths = {path.relative_to(root).as_posix() for path in payload_files(root)}
     if actual_paths != set(expected):
         missing = sorted(set(expected) - actual_paths)
