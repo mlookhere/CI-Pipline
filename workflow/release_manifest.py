@@ -67,17 +67,7 @@ def create(root: Path, commit: str) -> int:
     return 0
 
 
-def verify(root: Path, commit: str) -> int:
-    check_commit(commit)
-    metadata_path = root / "release-metadata.json"
-    sums_path = root / "SHA256SUMS"
-    if not metadata_path.is_file() or not sums_path.is_file():
-        raise SystemExit("release bundle is missing release-metadata.json or SHA256SUMS")
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("source_commit") != commit:
-        raise SystemExit(
-            f"release manifest commit {metadata.get('source_commit')!r} does not match expected {commit!r}"
-        )
+def validate_artifacts(metadata: dict) -> dict[str, dict]:
     declared = metadata.get("artifacts")
     if not isinstance(declared, list) or not declared:
         raise SystemExit("release manifest must declare nonempty artifacts")
@@ -93,6 +83,21 @@ def verify(root: Path, commit: str) -> int:
         if type(item.get("size")) is not int or item["size"] < 0:
             raise SystemExit("release manifest contains an invalid artifact size")
         expected[name] = item
+    return expected
+
+
+def verify(root: Path, commit: str) -> int:
+    check_commit(commit)
+    metadata_path = root / "release-metadata.json"
+    sums_path = root / "SHA256SUMS"
+    if not metadata_path.is_file() or not sums_path.is_file():
+        raise SystemExit("release bundle is missing release-metadata.json or SHA256SUMS")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("source_commit") != commit:
+        raise SystemExit(
+            f"release manifest commit {metadata.get('source_commit')!r} does not match expected {commit!r}"
+        )
+    expected = validate_artifacts(metadata)
     actual_paths = {path.relative_to(root).as_posix() for path in payload_files(root)}
     if actual_paths != set(expected):
         missing = sorted(set(expected) - actual_paths)
