@@ -87,7 +87,8 @@ def test_running_with_pending_is_not_mergeable():
         "No status marker",
         "CHATFREEPT_STATUS: Continue\nV: 1\nPHASE: Developing\nREPO: other/repo\nNOTE: no",
         "CHATFREEPT_STATUS: Continue\nV: 2\nPHASE: Developing\nREPO: mlookhere/CI-Pipline\nNOTE: no",
-        "CHATFREEPT_STATUS: Continue\nV: 1\nPHASE: Developing\nREPO: mlookhere/CI-Pipline\nNOTE: no\nNOTE: duplicate",
+        "CHATFREEPT_STATUS: Continue\nV: 1\nPHASE: Developing\n"
+        "REPO: mlookhere/CI-Pipline\nNOTE: no\nNOTE: duplicate",
         "CHATFREEPT_STATUS: Continue\nV: 1\nPHASE: Developing\nREPO: mlookhere/CI-Pipline\nNOTE: no\nPR: https://evil.example/pull/1",
         "CHATFREEPT_STATUS: Continue\nV: 1\nPHASE: Developing\nREPO: mlookhere/CI-Pipline\nNOTE: no\nISSUE: https://github.com/other/repo/issues/1",
     ],
